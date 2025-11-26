@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Register - Shiropulse</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-weight:900;color:var(--accent-2);font-size:22px">Shiropulse</div>
+      <div><a href="index.html" class="btn btn-ghost">Home</a></div>
+    </div>
+
+    <div style="max-width:720px;margin:0 auto">
+      <div class="auth-card">
+        <h3 class="auth-title">Create account</h3>
+        <p class="small">Choose role: patient, doctor or admin</p>
+
+        <form class="form" id="regForm" onsubmit="return false;">
+          <input id="name" class="input" placeholder="Full name" required />
+          <input id="email" class="input" type="email" placeholder="Email" required />
+          <input id="password" class="input" type="password" placeholder="Password" required />
+          <select id="role" class="input" required>
+            <option value="patient">Patient</option>
+            <option value="doctor">Doctor</option>
+            <option value="admin">Admin</option>
+          </select>
+
+          <button id="btnRegister" class="btn btn-primary full">Register</button>
+          <div id="regMsg" class="msg" style="color:var(--muted)"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+<script type="module">
+import { registerUser } from './firebase.js';
+const regMsg = document.getElementById('regMsg');
+
+document.getElementById('btnRegister').addEventListener('click', async (e)=>{
+  e.preventDefault();
+  regMsg.style.color='var(--muted)'; regMsg.textContent='Registering...';
+  const name = document.getElementById('name').value.trim();
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const role = document.getElementById('role').value;
+  if(!name||!email||!password){ regMsg.style.color='crimson'; regMsg.textContent='Please fill all fields'; return; }
+  try{
+    await registerUser({ name, email, password, role });
+    regMsg.style.color='lightgreen'; regMsg.textContent='Registered — redirecting to login...';
+    setTimeout(()=> location.href='login.html', 900);
+  }catch(err){
+    console.error(err);
+    const code = err?.code || 'error';
+    regMsg.style.color='crimson';
+    regMsg.innerHTML = `<strong>${code}</strong>: ${err?.message || err}`;
+  }
+});
+</script>
+</body>
+</html>

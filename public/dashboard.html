@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Dashboard - Shiropulse</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-weight:900;color:var(--accent-2);font-size:22px">Shiropulse</div>
+      <div><button id="btnLogout" class="btn btn-ghost">Logout</button></div>
+    </div>
+
+    <div id="content" class="auth-card">Loading...</div>
+    <div class="footer" style="margin-top:12px">© <span id="yr"></span> Shiropulse</div>
+  </div>
+
+<script type="module">
+import { onAuthState, getUserProfile, signOutUser } from './firebase.js';
+document.getElementById('yr').textContent = new Date().getFullYear();
+const content = document.getElementById('content');
+
+onAuthState(async (user) => {
+  if(!user){ sessionStorage.removeItem('shiropulse_session'); return location.href='login.html'; }
+  const profile = await getUserProfile(user.uid);
+  const name = profile?.name || user.email || 'User';
+  const role = profile?.role || 'patient';
+  let html = `<h2 style="margin-top:0">Welcome, ${escapeHtml(name)}</h2><p class="small">Role: <strong>${escapeHtml(role)}</strong></p>`;
+  if(role==='admin'){
+    html += `<div style="margin-top:12px" class="auth-card"><h4>Admin</h4><p class="small">Manage users and settings (demo)</p><button class="btn" onclick="alert('Admin tools (demo)')">Open</button></div>`;
+  } else if(role==='doctor'){
+    html += `<div style="margin-top:12px" class="auth-card"><h4>Doctor</h4><p class="small">View patients and live vitals (demo)</p><button class="btn" onclick="alert('Doctor view (demo)')">View patients</button></div>`;
+  } else {
+    html += `<div style="margin-top:12px" class="auth-card"><h4>Patient</h4><p class="small">View your sessions and records (demo)</p><button class="btn" onclick="alert('Patient records (demo)')">My records</button></div>`;
+  }
+  content.innerHTML = html;
+});
+
+document.getElementById('btnLogout').addEventListener('click', async ()=>{
+  try{ await signOutUser(); }catch(e){/*ignore*/} 
+  sessionStorage.removeItem('shiropulse_session'); location.href='login.html';
+});
+
+function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+</script>
+</body>
+</html>

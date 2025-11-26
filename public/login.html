@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Login - Shiropulse</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-weight:900;color:var(--accent-2);font-size:22px">Shiropulse</div>
+      <div><a href="index.html" class="btn btn-ghost">Home</a></div>
+    </div>
+
+    <div style="max-width:980px;margin:0 auto">
+      <div style="display:grid;grid-template-columns:1fr 420px;gap:24px;align-items:start">
+        <div class="hero" style="min-height:360px;padding:28px;">
+          <div class="left" style="padding:0">
+            <h1 class="title" style="color:#fff">Welcome back</h1>
+            <p class="lead" style="color:var(--muted);">Sign in to access your portal — patients, doctors and admins have different dashboards.</p>
+            <div style="margin-top:18px">
+              <a href="register.html" class="btn btn-ghost">Create new account</a>
+            </div>
+          </div>
+          <div class="visual" style="width:420px;align-items:flex-start;padding:22px;">
+            <div class="image"><img src="https://images.unsplash.com/photo-1584467735878-12d9ddc5b3a5?q=80&w=800&auto=format&fit=crop&ixlib=rb-4.0.3&s=2c1e6d0d1e2c5b6d6b0f0bf0f0f0f0f0" alt="auth-visual" /></div>
+          </div>
+        </div>
+
+        <aside>
+          <div class="auth-card">
+            <h3 class="auth-title">User Login</h3>
+            <p class="small">Email & password</p>
+            <form class="form" id="loginForm" onsubmit="return false;">
+              <input id="email" type="email" class="input" placeholder="Email" required />
+              <input id="password" type="password" class="input" placeholder="Password" required />
+              <div class="actions">
+                <label style="display:flex;gap:8px;align-items:center"><input id="remember" type="checkbox" /> <span class="small" style="color:var(--muted)">Remember</span></label>
+                <a href="#" class="small">Forgot?</a>
+              </div>
+
+              <button id="btnLogin" class="btn btn-primary full">Login</button>
+              <div id="loginMsg" class="msg" style="color:var(--muted)"></div>
+            </form>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+<script type="module">
+import { login, getUserProfile } from './firebase.js';
+
+const loginMsg = document.getElementById('loginMsg');
+
+document.getElementById('btnLogin').addEventListener('click', async (e)=>{
+  e.preventDefault();
+  loginMsg.style.color='var(--muted)'; loginMsg.textContent='Signing in...';
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  try{
+    const cred = await login({ email, password });
+    const profile = await getUserProfile(cred.user.uid);
+    sessionStorage.setItem('shiropulse_session', JSON.stringify({ uid: cred.user.uid, name: profile?.name||'', role: profile?.role||'' }));
+    loginMsg.style.color='lightgreen'; loginMsg.textContent='Signed in — redirecting...';
+    setTimeout(()=> location.href='dashboard.html', 600);
+  }catch(err){
+    console.error(err);
+    const code = err?.code || 'error';
+    const message = err?.message || String(err);
+    loginMsg.style.color='crimson';
+    loginMsg.innerHTML = `<strong>${code}</strong>: ${message}`;
+  }
+});
+</script>
+</body>
+</html>

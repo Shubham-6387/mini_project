@@ -1,0 +1,410 @@
+import { initializeApp, getApps, getApp } from "firebase/app";
+import {
+    getAuth,
+    createUserWithEmailAndPassword,
+    signInWithEmailAndPassword,
+    signOut,
+    onAuthStateChanged,
+    type User
+} from "firebase/auth";
+import {
+    getFirestore,
+    doc,
+    setDoc,
+    getDoc,
+    collection,
+    query,
+    where,
+    getDocs,
+    onSnapshot,
+    orderBy,
+    limit,
+    serverTimestamp,
+    Timestamp
+} from "firebase/firestore";
+
+const firebaseConfig = {
+    apiKey: "AIzaSyAaj0u3TeB3UCjveXUPF4gN0ErthptwKlc",
+    authDomain: "shiropulse.firebaseapp.com",
+    projectId: "shiropulse",
+    storageBucket: "shiropulse.firebasestorage.app",
+    messagingSenderId: "922857374750",
+    appId: "1:922857374750:web:3ed0ea0982bcdbfe6d5a0f"
+};
+
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+export interface UserData {
+    name: string;
+    email: string;
+    role: string;
+    createdAt: any;
+}
+
+export interface PatientData {
+    name: string;
+    age: number;
+    gender?: string;
+    healthNotes: string;
+    medicalConditions?: string;
+    idNumber?: string;
+    consent: boolean;
+    createdAt: any;
+    createdBy: string;
+}
+
+/** registerUser: create Auth account + user profile in Firestore */
+export async function registerUser({ name, email, password, role }: { name: string; email: string; password: string; role: string }) {
+    if (!name || !email || !password || !role) throw new Error('Missing fields');
+    try {
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        const uid = cred.user.uid;
+        await setDoc(doc(db, 'users', uid), {
+            name, email, role, createdAt: serverTimestamp()
+        });
+        return cred;
+    } catch (err) {
+        throw err;
+    }
+}
+
+/** login */
+export async function login({ email, password }: { email: string; password: string }) {
+    if (!email || !password) throw new Error('Missing email/password');
+    try {
+        const cred = await signInWithEmailAndPassword(auth, email, password);
+        return cred;
+    } catch (err) {
+        throw err;
+    }
+}
+
+/** sign out */
+export async function signOutUser() {
+    return await signOut(auth);
+}
+
+/** get user profile from firestore */
+export async function getUserProfile(uid: string) {
+    if (!uid) return null;
+    const snap = await getDoc(doc(db, 'users', uid));
+    return snap.exists() ? snap.data() as UserData : null;
+}
+
+/** search for patient by name */
+export async function searchPatientByName(name: string) {
+    if (!name) return null;
+
+    try {
+        const patientsRef = collection(db, 'patients');
+        const q = query(patientsRef);
+        const querySnapshot = await getDocs(q);
+
+        // Search through all patients for matching name
+        for (const patientDoc of querySnapshot.docs) {
+            const metaRef = doc(db, 'patients', patientDoc.id, 'meta', 'info');
+            const metaSnap = await getDoc(metaRef);
+
+            if (metaSnap.exists()) {
+                const data = metaSnap.data() as PatientData;
+                // Case-insensitive name match
+                if (data.name.toLowerCase() === name.toLowerCase()) {
+                    return {
+                        id: patientDoc.id,
+                        ...data
+                    };
+                    export async function createPatient(patientData: Omit<PatientData, 'createdAt' | 'createdBy'>, userId?: string) {
+                        if (!patientData.name || !patientData.age || !patientData.consent) {
+                            throw new Error('Missing required fields: name, age, and consent are required');
+                        }
+
+                        try {
+                            // Generate a new patient ID
+                            const patientRef = doc(db, 'patients', `patient_${Date.now()}`);
+                            const patientId = patientRef.id;
+
+                            // Save patient metadata
+                            await setDoc(doc(db, 'patients', patientId, 'meta', 'info'), {
+                                ...patientData,
+                                createdAt: serverTimestamp(),
+                                createdBy: userId || 'system'
+                            });
+
+                            return patientId;
+                        } catch (err) {
+                            throw err;
+                        }
+                    }
+
+                    /** onAuthState wrapper */
+                    export function onAuthState(cb: (user: User | null) => void) {
+                        return onAuthStateChanged(auth, cb);
+                    }
+
+                    // ============ NEW INTERFACES FOR THERAPIST SYSTEM ============
+
+                    export interface DeviceStatus {
+                        last_seen: any;
+                        online: boolean;
+                        firmware_version?: string;
+                    }
+
+                    export interface SessionMetadata {
+                        start_ts: any;
+                        therapist: string;
+                        status: 'starting' | 'active' | 'stopping' | 'completed';
+                        patientId: string;
+                        deviceId: string;
+                        end_ts?: any;
+                    }
+
+                    export interface Telemetry {
+                        timestamp: any;
+                        pulse?: number;
+                        spo2?: number;
+                        flowState?: string;
+                        temperature?: number;
+                    }
+
+                    export interface SessionSummary {
+                        end_ts: any;
+                        duration: number;
+                        avgPulse?: number;
+                        relaxationIndex?: number;
+                        alerts?: string[];
+                        notes?: string;
+                    }
+
+                    // ============ PATIENT MANAGEMENT FUNCTIONS ============
+
+                    /** Get all patients for dropdown */
+                    export async function getAllPatients() {
+                        try {
+                            const patientsRef = collection(db, 'patients');
+                            const querySnapshot = await getDocs(patientsRef);
+
+                            const patients: Array<{ id: string, name: string, age: number }> = [];
+
+                            for (const patientDoc of querySnapshot.docs) {
+                                const metaRef = doc(db, 'patients', patientDoc.id, 'meta', 'info');
+                                const metaSnap = await getDoc(metaRef);
+
+                                if (metaSnap.exists()) {
+                                    const data = metaSnap.data() as PatientData;
+                                    patients.push({
+                                        id: patientDoc.id,
+                                        name: data.name,
+                                        age: data.age
+                                    });
+                                }
+                            }
+
+                            return patients;
+                        } catch (err) {
+                            console.error('Error getting patients:', err);
+                            return [];
+                        }
+                    }
+
+                    /** Get patient metadata */
+                    export async function getPatientMeta(patientId: string) {
+                        if (!patientId) return null;
+
+                        try {
+                            const metaRef = doc(db, 'patients', patientId, 'meta', 'info');
+                            const metaSnap = await getDoc(metaRef);
+
+                            if (metaSnap.exists()) {
+                                return metaSnap.data() as PatientData;
+                            }
+                            return null;
+                        } catch (err) {
+                            console.error('Error getting patient meta:', err);
+                            return null;
+                        }
+                    }
+
+                    /** Get patient's session history */
+                    export async function getPatientSessions(patientId: string) {
+                        if (!patientId) return [];
+
+                        try {
+                            const sessionsRef = collection(db, 'patients', patientId, 'sessions');
+                            const q = query(sessionsRef, orderBy('start_ts', 'desc'), limit(10));
+                            const querySnapshot = await getDocs(q);
+
+                            const sessions: Array<{ id: string, metadata: SessionMetadata }> = [];
+
+                            for (const sessionDoc of querySnapshot.docs) {
+                                const metadataRef = doc(db, 'patients', patientId, 'sessions', sessionDoc.id, 'metadata', 'info');
+                                const metadataSnap = await getDoc(metadataRef);
+
+                                if (metadataSnap.exists()) {
+                                    sessions.push({
+                                        id: sessionDoc.id,
+                                        metadata: metadataSnap.data() as SessionMetadata
+                                    });
+                                }
+                            }
+
+                            return sessions;
+                        } catch (err) {
+                            console.error('Error getting patient sessions:', err);
+                            return [];
+                        }
+                    }
+
+                    // ============ DEVICE MANAGEMENT FUNCTIONS ============
+
+                    /** Get device status */
+                    export async function getDeviceStatus(deviceId: string = 'pi-01') {
+                        try {
+                            const statusRef = doc(db, 'devices', deviceId, 'status', 'current');
+                            const statusSnap = await getDoc(statusRef);
+
+                            if (statusSnap.exists()) {
+                                const data = statusSnap.data() as DeviceStatus;
+
+                                // Check if device is online (last seen within 30 seconds)
+                                const lastSeen = data.last_seen?.toDate?.() || new Date(0);
+                                const now = new Date();
+                                const diffSeconds = (now.getTime() - lastSeen.getTime()) / 1000;
+
+                                return {
+                                    ...data,
+                                    online: diffSeconds < 30
+                                };
+                            }
+
+                            return { last_seen: null, online: false };
+                        } catch (err) {
+                            console.error('Error getting device status:', err);
+                            return { last_seen: null, online: false };
+                        }
+                    }
+
+                    /** Subscribe to device status updates */
+                    export function subscribeToDeviceStatus(deviceId: string = 'pi-01', callback: (status: DeviceStatus) => void) {
+                        const statusRef = doc(db, 'devices', deviceId, 'status', 'current');
+
+                        return onSnapshot(statusRef, (snapshot) => {
+                            if (snapshot.exists()) {
+                                const data = snapshot.data() as DeviceStatus;
+                                const lastSeen = data.last_seen?.toDate?.() || new Date(0);
+                                const now = new Date();
+                                const diffSeconds = (now.getTime() - lastSeen.getTime()) / 1000;
+
+                                callback({
+                                    ...data,
+                                    online: diffSeconds < 30
+                                });
+                            } else {
+                                callback({ last_seen: null, online: false });
+                            }
+                        });
+                    }
+
+                    // ============ SESSION MANAGEMENT FUNCTIONS ============
+
+                    /** Start a new session */
+                    export async function startSession(patientId: string, therapistId: string, deviceId: string = 'pi-01') {
+                        if (!patientId || !therapistId) {
+                            throw new Error('Patient ID and Therapist ID are required');
+                        }
+
+                        try {
+                            const sessionId = `sess_${Date.now()}`;
+
+                            // Write session metadata
+                            const metadataRef = doc(db, 'patients', patientId, 'sessions', sessionId, 'metadata', 'info');
+                            await setDoc(metadataRef, {
+                                start_ts: serverTimestamp(),
+                                therapist: therapistId,
+                                status: 'starting',
+                                patientId,
+                                deviceId
+                            } as SessionMetadata);
+
+                            // Send command to device
+                            const cmdId = `cmd_${Date.now()}`;
+                            const commandRef = doc(db, 'devices', deviceId, 'commands', cmdId);
+                            await setDoc(commandRef, {
+                                cmd: 'start_session',
+                                sessionId,
+                                patientId,
+                                timestamp: serverTimestamp(),
+                                ack: false
+                            });
+
+                            return sessionId;
+                        } catch (err) {
+                            console.error('Error starting session:', err);
+                            throw err;
+                        }
+                    }
+
+                    /** Stop a session */
+                    export async function stopSession(sessionId: string, patientId: string, deviceId: string = 'pi-01') {
+                        if (!sessionId || !patientId) {
+                            throw new Error('Session ID and Patient ID are required');
+                        }
+
+                        try {
+                            // Update session status
+                            const metadataRef = doc(db, 'patients', patientId, 'sessions', sessionId, 'metadata', 'info');
+                            await setDoc(metadataRef, {
+                                status: 'stopping',
+                                end_ts: serverTimestamp()
+                            }, { merge: true });
+
+                            // Send stop command to device
+                            const cmdId = `cmd_${Date.now()}`;
+                            const commandRef = doc(db, 'devices', deviceId, 'commands', cmdId);
+                            await setDoc(commandRef, {
+                                cmd: 'stop_session',
+                                sessionId,
+                                patientId,
+                                timestamp: serverTimestamp(),
+                                ack: false
+                            });
+
+                            return true;
+                        } catch (err) {
+                            console.error('Error stopping session:', err);
+                            throw err;
+                        }
+                    }
+
+                    /** Subscribe to session telemetry */
+                    export function subscribeToTelemetry(sessionId: string, patientId: string, callback: (data: Telemetry) => void) {
+                        const telemetryRef = collection(db, 'patients', patientId, 'sessions', sessionId, 'telemetry');
+                        const q = query(telemetryRef, orderBy('timestamp', 'desc'), limit(1));
+
+                        return onSnapshot(q, (snapshot) => {
+                            snapshot.docChanges().forEach((change) => {
+                                if (change.type === 'added') {
+                                    callback(change.doc.data() as Telemetry);
+                                }
+                            });
+                        });
+                    }
+
+                    /** Get session summary */
+                    export async function getSessionSummary(sessionId: string, patientId: string) {
+                        try {
+                            const summaryRef = doc(db, 'patients', patientId, 'sessions', sessionId, 'summary', 'final');
+                            const summarySnap = await getDoc(summaryRef);
+
+                            if (summarySnap.exists()) {
+                                return summarySnap.data() as SessionSummary;
+                            }
+                            return null;
+                        } catch (err) {
+                            console.error('Error getting session summary:', err);
+                            return null;
+                        }
+                    }
+
+                    export { app, auth, db };

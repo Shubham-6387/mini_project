@@ -537,4 +537,67 @@ export async function toggleDevicePower(deviceId: string = 'pi-01', powerState: 
     }
 }
 
+export async function emergencyStop(deviceId: string = 'pi-01') {
+    try {
+        const cmdId = `cmd_${Date.now()}`;
+        const commandRef = doc(db, 'devices', deviceId, 'commands', cmdId);
+        await setDoc(commandRef, {
+            cmd: 'emergency_stop',
+            issued_by: 'therapist',
+            timestamp: serverTimestamp(),
+            ack: false
+        });
+        return true;
+    } catch (err) {
+        console.error('Error sending emergency stop:', err);
+        throw err;
+    }
+}
+
+export async function sendDeviceCommand(deviceId: string = 'pi-01', command: string, value: any) {
+    try {
+        const cmdId = `cmd_${Date.now()}`;
+        const commandRef = doc(db, 'devices', deviceId, 'commands', cmdId);
+        await setDoc(commandRef, {
+            cmd: command,
+            value: value,
+            issued_by: 'therapist',
+            timestamp: serverTimestamp(),
+            ack: false
+        });
+        return cmdId;
+    } catch (err) {
+        console.error(`Error sending command ${command}:`, err);
+        throw err;
+    }
+}
+
+export function subscribeToSessionHistory(sessionId: string, patientId: string, callback: (data: Telemetry[]) => void) {
+    const telemetryRef = collection(db, 'patients', patientId, 'sessions', sessionId, 'telemetry');
+    // Get last 120 points for charts
+    const q = query(telemetryRef, orderBy('timestamp', 'desc'), limit(120));
+
+    return onSnapshot(q, (snapshot) => {
+        const history: Telemetry[] = [];
+        snapshot.forEach((doc) => {
+            history.push(doc.data() as Telemetry);
+        });
+        // Reverse to have chronological order for charts
+        callback(history.reverse());
+    });
+}
+
+export function subscribeToSessionStatus(sessionId: string, patientId: string, callback: (status: string) => void) {
+    // Listen to the parent session document instead of metadata/info
+    // This is more robust as the device script updates this document directly
+    const sessionRef = doc(db, 'patients', patientId, 'sessions', sessionId);
+
+    return onSnapshot(sessionRef, (snapshot) => {
+        if (snapshot.exists()) {
+            const data = snapshot.data() as { status: string };
+            callback(data.status);
+        }
+    });
+}
+
 export { app, auth, db };

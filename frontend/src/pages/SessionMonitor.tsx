@@ -1,10 +1,45 @@
 import { useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import { getPatientMeta, subscribeToTelemetry, stopSession, saveSessionSummary, type PatientData, type Telemetry } from '../lib/firebase';
+import {
+    getPatientMeta,
+    subscribeToTelemetry,
+    subscribeToSessionHistory,
+    subscribeToSessionStatus,
+    subscribeToDeviceStatus,
+    stopSession,
+    emergencyStop,
+    type PatientData,
+    type Telemetry,
+    type DeviceStatus
+} from '../lib/firebase';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Navigation } from '../components/Navigation';
 import { Footer } from '../components/Footer';
+import {
+    Chart as ChartJS,
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    LineElement,
+    Title,
+    Tooltip,
+    Legend,
+    Filler
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '../components/ui/dialog';
+
+ChartJS.register(
+    CategoryScale,
+    LinearScale,
+    PointElement,
+    LineElement,
+    Title,
+    Tooltip,
+    Legend,
+    Filler
+);
 
 export default function SessionMonitor() {
     const { sessionId } = useParams<{ sessionId: string }>();
@@ -14,11 +49,15 @@ export default function SessionMonitor() {
 
     const [patient, setPatient] = useState<PatientData | null>(null);
     const [telemetry, setTelemetry] = useState<Telemetry | null>(null);
+    const [history, setHistory] = useState<Telemetry[]>([]);
     const [sessionTime, setSessionTime] = useState(0);
     const [stopping, setStopping] = useState(false);
     const [isSessionStopped, setIsSessionStopped] = useState(false);
-    const [sessionHistory, setSessionHistory] = useState<Telemetry[]>([]);
-    const [showReport, setShowReport] = useState(false);
+    const [showCompletionModal, setShowCompletionModal] = useState(false);
+    const [completionStatus, setCompletionStatus] = useState('');
+    const [deviceStatus, setDeviceStatus] = useState<DeviceStatus>({ last_seen: null, online: false });
+
+    const [relaxScore, setRelaxScore] = useState(50);
 
     useEffect(() => {
         if (!sessionId || !patientId) {
@@ -29,9 +68,30 @@ export default function SessionMonitor() {
         // Load patient data
         getPatientMeta(patientId).then(setPatient);
 
-        // Subscribe to telemetry
-        const unsubscribe = subscribeToTelemetry(sessionId, patientId, (data) => {
+        // Subscribe to real-time telemetry (latest point)
+        const unsubTelemetry = subscribeToTelemetry(sessionId, patientId, (data) => {
             setTelemetry(data);
+            // Controls update removed
+        });
+
+        // Subscribe to session history (for charts)
+        const unsubHistory = subscribeToSessionHistory(sessionId, patientId, (data) => {
+            setHistory(data);
+            setRelaxScore(computeRelaxScore(data));
+        });
+
+        // Subscribe to session status
+        const unsubStatus = subscribeToSessionStatus(sessionId, patientId, (status) => {
+            if (status === 'completed' || status === 'stopped_emergency' || status === 'stopped') {
+                setIsSessionStopped(true);
+                setCompletionStatus(status);
+                setShowCompletionModal(true);
+            }
+        });
+
+        // Subscribe to device status
+        const unsubDevice = subscribeToDeviceStatus('pi-01', (status) => {
+            setDeviceStatus(status);
         });
 
         // Session timer
@@ -42,48 +102,40 @@ export default function SessionMonitor() {
         }, 1000);
 
         return () => {
-            unsubscribe();
+            unsubTelemetry();
+            unsubHistory();
+            unsubStatus();
+            unsubDevice();
             clearInterval(timer);
         };
     }, [sessionId, patientId, navigate, isSessionStopped]);
 
-    // Virtualization & Safety Logic
-    useEffect(() => {
-        if (stopping || isSessionStopped) return;
+    const computeRelaxScore = (samples: Telemetry[]) => {
+        if (!samples || samples.length === 0) return 50;
+        const bpm = samples.map(s => s.pulse).filter(x => typeof x === 'number') as number[];
+        if (bpm.length < 3) return 50;
+        const start = bpm[0];
+        const end = bpm[bpm.length - 1];
+        const drop = Math.max(0, start - end);
+        let score = 50 + Math.min(30, drop * 2);
+        const last = samples[samples.length - 1];
+        if (last && last.spo2 && last.spo2 > 96) score += 3;
+        return Math.max(0, Math.min(100, Math.round(score)));
+    };
 
-        const interval = setInterval(() => {
-            // Simulate data if no real telemetry
-            const simulated: Telemetry = {
-                timestamp: new Date(),
-                pulse: Math.floor(60 + Math.random() * 40), // 60-100
-                spo2: Math.floor(95 + Math.random() * 5),   // 95-100
-                temperature: Number((36 + Math.random() * 2).toFixed(1)), // 36-38
-                flowState: 'on'
-            };
-            setTelemetry(simulated);
-            setSessionHistory(prev => [...prev, simulated]);
+    const getStatusEmoji = () => {
+        if (!deviceStatus.online) return '🔌'; // Plug/Offline
+        if (isSessionStopped) return '🏁'; // Checkered flag / Finished
 
-            // Safety Check
-            if (simulated.pulse && (simulated.pulse > 110 || simulated.pulse < 50)) {
-                handleAutoStop(`Abnormal Pulse detected: ${simulated.pulse} BPM`);
-            }
-            if (simulated.spo2 && simulated.spo2 < 90) {
-                handleAutoStop(`Low SpO2 detected: ${simulated.spo2}%`);
-            }
-        }, 2000);
-
-        return () => clearInterval(interval);
-    }, [stopping, isSessionStopped]);
-
-    const handleAutoStop = async (reason: string) => {
-        if (stopping || isSessionStopped) return;
-        alert(`CRITICAL ALERT: Stopping session automatically.\nReason: ${reason}`);
-        await handleStopSession();
+        // If running, show relaxation score
+        if (relaxScore >= 80) return '😌';
+        if (relaxScore >= 60) return '🙂';
+        if (relaxScore >= 40) return '😐';
+        return '😟';
     };
 
     const handleStopSession = async () => {
         if (!sessionId || !patientId) return;
-
         setStopping(true);
         try {
             await stopSession(sessionId, patientId, 'pi-01');
@@ -95,72 +147,14 @@ export default function SessionMonitor() {
         }
     };
 
-    const handleResume = () => {
-        setIsSessionStopped(false);
-        setShowReport(false);
-    };
-
-    const getSessionStats = () => {
-        if (sessionHistory.length === 0) return { avgPulse: 0, avgSpO2: 0, maxTemp: 0 };
-        const totalPulse = sessionHistory.reduce((acc, curr) => acc + (curr.pulse || 0), 0);
-        const totalSpO2 = sessionHistory.reduce((acc, curr) => acc + (curr.spo2 || 0), 0);
-        const maxTemp = Math.max(...sessionHistory.map(d => d.temperature || 0));
-
-        return {
-            avgPulse: Math.round(totalPulse / sessionHistory.length),
-            avgSpO2: Math.round(totalSpO2 / sessionHistory.length),
-            maxTemp
-        };
-    };
-
-    const handleDownloadReport = () => {
-        const stats = getSessionStats();
-        const csvContent = [
-            ['Patient Name', 'Date', 'Duration', 'Avg Pulse (BPM)', 'Avg SpO2 (%)', 'Max Temp (C)'],
-            [
-                patient?.name || 'Unknown',
-                new Date().toLocaleDateString(),
-                formatTime(sessionTime),
-                stats.avgPulse,
-                stats.avgSpO2,
-                stats.maxTemp
-            ]
-        ].map(e => e.join(",")).join("\n");
-
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `session_report_${sessionId}.csv`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    };
-
-    const handleGenerateReport = async () => {
-        if (!sessionId || !patientId) return;
-
-        const stats = getSessionStats();
-        setShowReport(true);
-
-        // Save summary to database
+    const handleEmergencyStop = async () => {
         try {
-            await saveSessionSummary(sessionId, patientId, {
-                end_ts: new Date(),
-                duration: sessionTime,
-                avgPulse: stats.avgPulse,
-                avgSpO2: stats.avgSpO2,
-                maxTemp: stats.maxTemp,
-                notes: 'Session stopped manually'
-            });
+            await emergencyStop('pi-01');
+            alert('EMERGENCY STOP COMMAND SENT');
+            setIsSessionStopped(true);
         } catch (err) {
-            console.error('Failed to save session summary:', err);
+            alert('Failed to send emergency stop');
         }
-    };
-
-    const handleReturnToDashboard = () => {
-        navigate('/dashboard');
     };
 
     const formatTime = (seconds: number) => {
@@ -169,175 +163,296 @@ export default function SessionMonitor() {
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
+    // Chart Data
+    const labels = history.map(h => h.timestamp ? new Date(h.timestamp.toDate()).toLocaleTimeString() : '');
+
+    const pulseChartData = {
+        labels,
+        datasets: [
+            {
+                label: 'Pulse (BPM)',
+                data: history.map(h => h.pulse),
+                borderColor: 'rgb(239, 68, 68)',
+                backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                borderWidth: 2,
+                tension: 0.4,
+                pointRadius: 0,
+                pointHoverRadius: 4
+            }
+        ]
+    };
+
+    const flowTempChartData = {
+        labels,
+        datasets: [
+            {
+                label: 'Flow (ml/min)',
+                data: history.map(h => h.flowState),
+                borderColor: 'rgb(34, 197, 94)',
+                backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                borderWidth: 2,
+                yAxisID: 'y',
+                tension: 0.4,
+                pointRadius: 0,
+                pointHoverRadius: 4
+            },
+            {
+                label: 'Temp (°C)',
+                data: history.map(h => h.temperature),
+                borderColor: 'rgb(245, 158, 11)',
+                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                borderWidth: 2,
+                yAxisID: 'y1',
+                tension: 0.4,
+                pointRadius: 0,
+                pointHoverRadius: 4
+            }
+        ]
+    };
+
+    const chartOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 0 },
+        interaction: {
+            mode: 'index' as const,
+            intersect: false,
+        },
+        plugins: {
+            legend: {
+                position: 'top' as const,
+                align: 'end' as const,
+                labels: {
+                    usePointStyle: true,
+                    boxWidth: 8,
+                    font: { size: 11 }
+                }
+            },
+            tooltip: {
+                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                titleColor: '#1f2937',
+                bodyColor: '#4b5563',
+                borderColor: '#e5e7eb',
+                borderWidth: 1,
+                padding: 10,
+                displayColors: true,
+                callbacks: {
+                    label: function (context: any) {
+                        return context.dataset.label + ': ' + context.parsed.y;
+                    }
+                }
+            }
+        },
+        scales: {
+            x: {
+                display: false,
+                grid: { display: false }
+            },
+            y: {
+                type: 'linear' as const,
+                display: true,
+                position: 'left' as const,
+                grid: {
+                    color: 'rgba(0, 0, 0, 0.03)',
+                    drawBorder: false,
+                },
+                border: { display: false },
+                ticks: { font: { size: 10 }, color: 'rgb(34, 197, 94)' },
+                title: { display: true, text: 'Flow (ml/min)', color: 'rgb(34, 197, 94)', font: { size: 10 } },
+                suggestedMin: 0,
+                suggestedMax: 60
+            },
+            y1: {
+                type: 'linear' as const,
+                display: true,
+                position: 'right' as const,
+                grid: { display: false },
+                border: { display: false },
+                ticks: { font: { size: 10 }, color: 'rgb(245, 158, 11)' },
+                title: { display: true, text: 'Temp (°C)', color: 'rgb(245, 158, 11)', font: { size: 10 } },
+                suggestedMin: 30,
+                suggestedMax: 45
+            }
+        }
+    };
+
     return (
-        <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50 flex flex-col">
+        <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50 text-gray-900 flex flex-col font-sans">
             <Navigation />
 
-            <main className="flex-grow container mx-auto px-6 py-24">
-                <div className="mb-6">
-                    <h1 className="text-3xl font-bold text-gray-900">Live Session Monitor</h1>
-                    <p className="text-gray-600 mt-1">Patient: {patient?.name || 'Loading...'}</p>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    {/* Session Timer */}
-                    <Card className="bg-white/80 backdrop-blur-sm">
-                        <CardHeader>
-                            <CardTitle className="text-xl text-orange-600">Session Time</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-center">
-                                <p className="text-5xl font-bold text-orange-600">{formatTime(sessionTime)}</p>
-                                <p className="text-sm text-gray-600 mt-2">Minutes:Seconds</p>
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    {/* Pulse Monitor */}
-                    <Card className="bg-white/80 backdrop-blur-sm">
-                        <CardHeader>
-                            <CardTitle className="text-xl text-red-600">Heart Rate</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-center">
-                                <p className="text-5xl font-bold text-red-600">
-                                    {telemetry?.pulse || '--'}
-                                </p>
-                                <p className="text-sm text-gray-600 mt-2">BPM</p>
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    {/* SpO2 Monitor */}
-                    <Card className="bg-white/80 backdrop-blur-sm">
-                        <CardHeader>
-                            <CardTitle className="text-xl text-blue-600">Blood Oxygen</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-center">
-                                <p className="text-5xl font-bold text-blue-600">
-                                    {telemetry?.spo2 || '--'}
-                                </p>
-                                <p className="text-sm text-gray-600 mt-2">SpO2 %</p>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-
-                {/* Flow and Temperature */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-                    <Card className="bg-white/80 backdrop-blur-sm">
-                        <CardHeader>
-                            <CardTitle className="text-xl text-green-600">Oil Flow</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="flex items-center gap-4">
-                                <div className={`w-8 h-8 rounded-full ${telemetry?.flowState === 'on' ? 'bg-green-500 animate-pulse' : 'bg-gray-300'}`}></div>
-                                <div>
-                                    <p className="font-medium text-lg">{telemetry?.flowState === 'on' ? 'Flowing' : 'Stopped'}</p>
-                                    <p className="text-sm text-gray-600">Flow Status</p>
-                                </div>
-                            </div>
-                        </CardContent>
-                    </Card>
-
-                    <Card className="bg-white/80 backdrop-blur-sm">
-                        <CardHeader>
-                            <CardTitle className="text-xl text-amber-600">Temperature</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="text-center">
-                                <p className="text-4xl font-bold text-amber-600">
-                                    {telemetry?.temperature || '--'}°C
-                                </p>
-                                <p className="text-sm text-gray-600 mt-2">Oil Temperature</p>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </div>
-
-                {/* Pulse Graph Placeholder */}
-                <Card className="mt-6 bg-white/80 backdrop-blur-sm">
-                    <CardHeader>
-                        <CardTitle className="text-xl text-purple-600">Pulse Graph</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="h-64 flex items-center justify-center bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
-                            <p className="text-gray-500">Real-time pulse graph will be displayed here</p>
+            <main className="flex-grow container mx-auto px-4 pt-24 pb-8">
+                {/* Header */}
+                <div className="flex justify-between items-center mb-8">
+                    <div>
+                        <h1 className="text-3xl font-bold text-gray-900">Shirodhara — Smart Monitoring</h1>
+                        <p className="text-gray-600 text-sm mt-1">Patient: {patient?.name || 'Loading...'} • Session: {sessionId}</p>
+                    </div>
+                    <div className="flex items-center gap-4">
+                        <div className="px-3 py-1 bg-white rounded-full border border-gray-200 text-sm shadow-sm text-gray-600">
+                            Device: pi-01
                         </div>
-                    </CardContent>
-                </Card>
+                        <div className={`px-3 py-1 rounded-full border text-sm shadow-sm ${isSessionStopped ? 'bg-gray-100 border-gray-200 text-gray-600' : 'bg-green-50 border-green-200 text-green-700'}`}>
+                            State: {isSessionStopped ? 'Stopped' : 'Running'}
+                        </div>
+                        <div className="text-3xl filter drop-shadow-sm transition-all duration-500 hover:scale-110" title="Status">
+                            {getStatusEmoji()}
+                        </div>
+                    </div>
+                </div>
 
-                {/* Control Panel */}
-                <Card className="mt-6 bg-white/80 backdrop-blur-sm">
-                    <CardHeader>
-                        <CardTitle className="text-xl text-gray-800">Session Control</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                        {isSessionStopped ? (
-                            <>
-                                <Button
-                                    onClick={handleResume}
-                                    disabled={showReport}
-                                    className="w-full bg-green-600 hover:bg-green-700 text-white text-lg py-6 shadow-md font-bold disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    RESUME SESSION
-                                </Button>
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                    {/* LEFT COLUMN: Patient Info & Actions */}
+                    <div className="lg:col-span-1 space-y-6">
+                        {/* Patient Info Card */}
+                        <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                            <CardHeader className="pb-2">
+                                <CardTitle className="text-lg text-orange-600">Patient Details</CardTitle>
+                            </CardHeader>
+                            <CardContent className="text-sm space-y-2">
+                                <div className="flex justify-between border-b border-gray-50 pb-1">
+                                    <span className="text-gray-500">Name</span>
+                                    <span className="font-medium">{patient?.name}</span>
+                                </div>
+                                <div className="flex justify-between border-b border-gray-50 pb-1">
+                                    <span className="text-gray-500">Age</span>
+                                    <span className="font-medium">{patient?.age}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-500">Notes</span>
+                                    <span className="truncate max-w-[150px] font-medium">{patient?.healthNotes || '—'}</span>
+                                </div>
+                            </CardContent>
+                        </Card>
 
-                                {!showReport ? (
-                                    <Button
-                                        onClick={handleGenerateReport}
-                                        variant="outline"
-                                        className="w-full text-lg py-6 shadow-sm"
-                                    >
-                                        Generate Session Result
+                        {/* Session Actions Card */}
+                        <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                            <CardHeader className="pb-2">
+                                <CardTitle className="text-lg text-orange-600">Actions</CardTitle>
+                            </CardHeader>
+                            <CardContent className="space-y-3">
+                                {isSessionStopped ? (
+                                    <Button variant="outline" onClick={() => navigate('/dashboard')} className="w-full border-gray-300 hover:bg-gray-50 text-gray-700">
+                                        Back to Dashboard
                                     </Button>
                                 ) : (
-                                    <Button
-                                        onClick={handleReturnToDashboard}
-                                        className="w-full bg-gray-800 hover:bg-gray-900 text-white text-lg py-6 shadow-md font-bold"
-                                    >
-                                        END SESSION
+                                    <Button variant="secondary" onClick={handleStopSession} disabled={stopping} className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800">
+                                        Stop Session
                                     </Button>
                                 )}
+                                <Button variant="destructive" onClick={handleEmergencyStop} className="w-full bg-red-600 hover:bg-red-700 shadow-md hover:shadow-lg transition-all">
+                                    EMERGENCY STOP
+                                </Button>
+                            </CardContent>
+                        </Card>
+                    </div>
 
-                                {showReport && (
-                                    <div className="bg-gray-50 p-6 rounded-lg border border-gray-200 animate-in fade-in slide-in-from-top-2">
-                                        <h3 className="font-bold text-lg text-gray-800 mb-4 text-center">Session Result</h3>
-                                        <div className="grid grid-cols-3 gap-4 text-center mb-6">
-                                            <div className="p-3 bg-white rounded shadow-sm">
-                                                <p className="text-xs text-gray-500 uppercase">Avg Pulse</p>
-                                                <p className="text-xl font-bold text-red-600">{getSessionStats().avgPulse} BPM</p>
-                                            </div>
-                                            <div className="p-3 bg-white rounded shadow-sm">
-                                                <p className="text-xs text-gray-500 uppercase">Avg SpO2</p>
-                                                <p className="text-xl font-bold text-blue-600">{getSessionStats().avgSpO2} %</p>
-                                            </div>
-                                            <div className="p-3 bg-white rounded shadow-sm">
-                                                <p className="text-xs text-gray-500 uppercase">Max Temp</p>
-                                                <p className="text-xl font-bold text-amber-600">{getSessionStats().maxTemp} °C</p>
-                                            </div>
-                                        </div>
-                                        <Button onClick={handleDownloadReport} variant="secondary" className="w-full">
-                                            Download Result
-                                        </Button>
+                    {/* RIGHT COLUMN: Charts & Stats */}
+                    <div className="lg:col-span-3 space-y-6">
+                        {/* Stats Row */}
+                        <div className="grid grid-cols-3 gap-4">
+                            <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                                <CardContent className="p-4 text-center">
+                                    <div className="text-gray-400 text-xs uppercase tracking-wider font-semibold">Time</div>
+                                    <div className="text-3xl font-mono text-gray-800 mt-1">{formatTime(sessionTime)}</div>
+                                </CardContent>
+                            </Card>
+                            <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                                <CardContent className="p-4 text-center">
+                                    <div className="text-gray-400 text-xs uppercase tracking-wider font-semibold">Pulse</div>
+                                    <div className="text-3xl font-mono text-red-500 mt-1">{telemetry?.pulse || '--'} <span className="text-sm text-gray-400 font-sans">BPM</span></div>
+                                </CardContent>
+                            </Card>
+                            <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                                <CardContent className="p-4 text-center">
+                                    <div className="text-gray-400 text-xs uppercase tracking-wider font-semibold">SpO2</div>
+                                    <div className="text-3xl font-mono text-blue-500 mt-1">{telemetry?.spo2 || '--'} <span className="text-sm text-gray-400 font-sans">%</span></div>
+                                </CardContent>
+                            </Card>
+                        </div>
+
+                        {/* Charts */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                                <CardHeader className="pb-2 border-b border-gray-50">
+                                    <CardTitle className="text-sm text-gray-500 uppercase tracking-wider">Pulse History</CardTitle>
+                                </CardHeader>
+                                <CardContent className="pt-4">
+                                    <div className="h-[300px]">
+                                        <Line options={chartOptions} data={pulseChartData} />
                                     </div>
-                                )}
-                            </>
-                        ) : (
-                            <Button
-                                onClick={handleStopSession}
-                                disabled={stopping}
-                                className="w-full bg-red-700 hover:bg-red-800 text-white text-lg py-6 shadow-md font-bold"
-                            >
-                                FORCE STOP
-                            </Button>
-                        )}
-                    </CardContent>
-                </Card>
-            </main>
+                                </CardContent>
+                            </Card>
 
+                            <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                                <CardHeader className="pb-2 border-b border-gray-50">
+                                    <CardTitle className="text-sm text-gray-500 uppercase tracking-wider">Flow & Temp</CardTitle>
+                                </CardHeader>
+                                <CardContent className="pt-4">
+                                    <div className="h-[300px]">
+                                        <Line options={{
+                                            ...chartOptions,
+                                            scales: {
+                                                ...chartOptions.scales,
+                                                y: { ...chartOptions.scales.y, display: true, position: 'left' as const },
+                                                y1: { ...chartOptions.scales.y1, display: true, position: 'right' as const, grid: { drawOnChartArea: false } },
+                                            }
+                                        }} data={flowTempChartData} />
+                                    </div>
+                                </CardContent>
+                            </Card>
+                        </div>
+
+                        {/* Session Summary Box */}
+                        <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                            <CardContent className="p-4 flex justify-between items-center">
+                                <div>
+                                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Session Summary</div>
+                                    <div className="text-gray-700 mt-1 font-medium">
+                                        Avg Pulse: {Math.round(history.reduce((a, b) => a + (b.pulse || 0), 0) / (history.length || 1))} bpm • Samples: {history.length}
+                                    </div>
+                                </div>
+                                <div className="text-right">
+                                    <div className="text-xs text-gray-400 uppercase tracking-wider font-semibold">Alerts</div>
+                                    <div className="text-gray-500 mt-1 text-sm italic">No active alerts</div>
+                                </div>
+                            </CardContent>
+                        </Card>
+                    </div>
+                </div>
+            </main>
             <Footer />
+
+            <Dialog open={showCompletionModal} onOpenChange={setShowCompletionModal}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className={completionStatus === 'stopped_emergency' ? 'text-red-600' : 'text-green-600'}>
+                            {completionStatus === 'stopped_emergency' ? 'Session Emergency Stopped' : 'Session Completed'}
+                        </DialogTitle>
+                        <DialogDescription>
+                            The session has ended. You can now return to the dashboard.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div className="flex flex-col">
+                                <span className="text-gray-500">Duration</span>
+                                <span className="font-medium">{formatTime(sessionTime)}</span>
+                            </div>
+                            <div className="flex flex-col">
+                                <span className="text-gray-500">Avg Pulse</span>
+                                <span className="font-medium">
+                                    {Math.round(history.reduce((a, b) => a + (b.pulse || 0), 0) / (history.length || 1))} bpm
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <DialogFooter className="sm:justify-center">
+                        <Button type="button" variant="default" onClick={() => navigate('/dashboard')} className="w-full">
+                            Return to Dashboard
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

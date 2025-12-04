@@ -28,6 +28,7 @@ export default function Dashboard() {
     const [duration, setDuration] = useState<number>(45);
     const [temperature, setTemperature] = useState<number>(37);
     const [flowRate, setFlowRate] = useState<number>(50);
+    const [mode, setMode] = useState<'auto' | 'manual'>('manual');
 
     const navigate = useNavigate();
 
@@ -143,7 +144,8 @@ export default function Dashboard() {
                 therapyType,
                 duration,
                 temperature,
-                flowRate
+                flowRate,
+                mode
             });
             navigate(`/session/${sessionId}?patientId=${selectedPatientId}`);
         } catch (err: any) {
@@ -346,6 +348,26 @@ export default function Dashboard() {
                                 </p>
                             </div>
 
+                            {/* Mode Selection */}
+                            <div className="flex items-center justify-between bg-gray-50 p-3 rounded-lg border border-gray-100">
+                                <div className="space-y-0.5">
+                                    <Label className="text-base">Operation Mode</Label>
+                                    <p className="text-xs text-gray-500">
+                                        {mode === 'auto' ? 'Device automatically adjusts flow & temp' : 'Manual control of flow & temp'}
+                                    </p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Label htmlFor="mode-toggle" className={`text-sm ${mode === 'manual' ? 'text-orange-600 font-bold' : 'text-gray-400'}`}>Manual</Label>
+                                    <Switch
+                                        id="mode-toggle"
+                                        checked={mode === 'auto'}
+                                        onCheckedChange={(checked) => setMode(checked ? 'auto' : 'manual')}
+                                        className="data-[state=checked]:bg-orange-500"
+                                    />
+                                    <Label htmlFor="mode-toggle" className={`text-sm ${mode === 'auto' ? 'text-orange-600 font-bold' : 'text-gray-400'}`}>Auto</Label>
+                                </div>
+                            </div>
+
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 {/* Duration */}
                                 <div className="space-y-2">
@@ -380,7 +402,7 @@ export default function Dashboard() {
                                             Recommended: {therapies.find(t => t.id === therapyType)?.defaultFlow}%
                                         </span>
                                     </div>
-                                    <div className="flex items-center gap-4">
+                                    <div className={`flex items-center gap-4 ${mode === 'auto' ? 'opacity-50 pointer-events-none' : ''}`}>
                                         <Slider
                                             value={[flowRate]}
                                             onValueChange={(val) => setFlowRate(val[0])}
@@ -395,6 +417,7 @@ export default function Dashboard() {
                                             className="w-20"
                                         />
                                     </div>
+                                    {mode === 'auto' && <p className="text-xs text-orange-500">Controlled automatically</p>}
                                 </div>
                             </div>
 
@@ -406,7 +429,7 @@ export default function Dashboard() {
                                         Recommended: {therapies.find(t => t.id === therapyType)?.defaultTemp}°C
                                     </span>
                                 </div>
-                                <div className="flex items-center gap-4">
+                                <div className={`flex items-center gap-4 ${mode === 'auto' ? 'opacity-50 pointer-events-none' : ''}`}>
                                     <Slider
                                         value={[temperature]}
                                         onValueChange={(val) => handleTemperatureChange(val[0])}
@@ -422,6 +445,7 @@ export default function Dashboard() {
                                         className="w-20"
                                     />
                                 </div>
+                                {mode === 'auto' && <p className="text-xs text-orange-500">Controlled automatically</p>}
                             </div>
 
                             <div className="pt-4 border-t border-gray-100">

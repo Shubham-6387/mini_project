@@ -1,0 +1,62 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper function to check if user is accessing their own data
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      // Allow reading and writing own profile
+      // Allow reading and writing own profile
+      allow update, delete: if isOwner(userId);
+      // Allow any authenticated user to read and create user profiles
+      allow read, create: if isAuthenticated();
+      // Allow admins to read all (if you have admin roles implemented)
+      // allow read: if isAuthenticated() && request.auth.token.admin == true;
+    }
+
+    // Patients Collection
+    match /patients/{patientId} {
+      // Allow authenticated users (Therapists) to read/write patients
+      allow read, write: if isAuthenticated();
+
+      match /meta/{docId} {
+        allow read, write: if isAuthenticated();
+      }
+
+      match /sessions/{sessionId} {
+        allow read, write: if isAuthenticated();
+        
+        match /metadata/{docId} {
+          allow read, write: if isAuthenticated();
+        }
+        match /telemetry/{docId} {
+          allow read, write: if isAuthenticated();
+        }
+        match /summary/{docId} {
+          allow read, write: if isAuthenticated();
+        }
+      }
+    }
+
+    // Devices Collection
+    match /devices/{deviceId} {
+      allow read, write: if isAuthenticated();
+      
+      match /status/{docId} {
+         allow read, write: if isAuthenticated();
+      }
+      match /commands/{docId} {
+         allow read, write: if isAuthenticated();
+      }
+    }
+  }
+}

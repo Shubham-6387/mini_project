@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { login, resetPassword } from '../lib/firebase';
+import { login, resetPassword, getUserProfile } from '../lib/firebase';
 import { useNavigate, Link } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -20,8 +20,14 @@ export default function Login() {
         setSuccess('');
         setLoading(true);
         try {
-            await login({ email, password });
-            navigate('/dashboard');
+            const cred = await login({ email, password });
+            const profile = await getUserProfile(cred.user.uid);
+
+            if (profile?.role === 'patient') {
+                navigate('/patient-dashboard');
+            } else {
+                navigate('/dashboard');
+            }
         } catch (err: any) {
             // Convert Firebase errors to user-friendly messages
             let errorMessage = 'An error occurred. Please try again.';
@@ -34,6 +40,8 @@ export default function Login() {
                 errorMessage = 'This account has been disabled. Please contact support.';
             } else if (err.code === 'auth/too-many-requests') {
                 errorMessage = 'Too many failed login attempts. Please try again later.';
+            } else if (err.code === 'permission-denied') {
+                errorMessage = 'Missing or insufficient permissions. Please check your Firestore Security Rules.';
             } else if (err.message) {
                 // If it's not a Firebase error, show the original message
                 errorMessage = err.message.replace('Firebase: ', '').replace(/\(auth\/[^)]+\)\.?/, '').trim();

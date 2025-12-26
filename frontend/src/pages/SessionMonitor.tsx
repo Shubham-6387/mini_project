@@ -2,12 +2,15 @@ import { useEffect, useState } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import {
     getPatientMeta,
+    getSessionMetadata,
     subscribeToTelemetry,
     subscribeToSessionHistory,
     subscribeToSessionStatus,
     subscribeToDeviceStatus,
     stopSession,
     emergencyStop,
+    saveSessionSummary,
+    completeSession,
     type PatientData,
     type Telemetry,
     type DeviceStatus
@@ -59,6 +62,18 @@ export default function SessionMonitor() {
 
     const [relaxScore, setRelaxScore] = useState(50);
 
+    const [duration, setDuration] = useState<number | null>(null); // Start as null to identify loading state
+
+    // Helper: Retry fetch
+    const fetchMetaWithRetry = async (sId: string, pId: string, attempts = 5) => {
+        for (let i = 0; i < attempts; i++) {
+            const meta = await getSessionMetadata(sId, pId);
+            if (meta) return meta;
+            await new Promise(r => setTimeout(r, 1000)); // Wait 1s
+        }
+        return null;
+    };
+
     useEffect(() => {
         if (!sessionId || !patientId) {
             navigate('/dashboard');
@@ -68,10 +83,38 @@ export default function SessionMonitor() {
         // Load patient data
         getPatientMeta(patientId).then(setPatient);
 
+        // Load session metadata with retry to ensure doc exists
+        fetchMetaWithRetry(sessionId, patientId).then((meta) => {
+            if (meta) {
+                console.log("Metadata loaded:", meta);
+                if (meta.settings?.duration) {
+                    const d = parseInt(String(meta.settings.duration), 10);
+                    if (!isNaN(d)) setDuration(d);
+                    else {
+                        console.warn("Invalid duration in settings, defaulting to 45");
+                        setDuration(45);
+                    }
+                } else {
+                    console.warn("No duration in settings, defaulting to 45");
+                    setDuration(45);
+                }
+
+                // Sync start time
+                if (meta.start_ts) {
+                    const start = meta.start_ts.toDate ? meta.start_ts.toDate() : new Date(meta.start_ts);
+                    const now = new Date();
+                    const elapsedSeconds = Math.floor((now.getTime() - start.getTime()) / 1000);
+                    setSessionTime(elapsedSeconds > 0 ? elapsedSeconds : 0);
+                }
+            } else {
+                console.error("Failed to load session metadata after retries.");
+                alert("Error: Could not load session details. Please try again.");
+            }
+        });
+
         // Subscribe to real-time telemetry (latest point)
         const unsubTelemetry = subscribeToTelemetry(sessionId, patientId, (data) => {
             setTelemetry(data);
-            // Controls update removed
         });
 
         // Subscribe to session history (for charts)
@@ -94,7 +137,7 @@ export default function SessionMonitor() {
             setDeviceStatus(status);
         });
 
-        // Session timer
+        // Session timer & Auto-stop
         const timer = setInterval(() => {
             if (!isSessionStopped) {
                 setSessionTime((prev) => prev + 1);
@@ -109,6 +152,15 @@ export default function SessionMonitor() {
             clearInterval(timer);
         };
     }, [sessionId, patientId, navigate, isSessionStopped]);
+
+    // Separate effect for Auto-Stop
+    useEffect(() => {
+        if (!isSessionStopped && !stopping && sessionTime > 0 && duration !== null && duration > 0) {
+            if (sessionTime >= duration * 60 + 1) { // +1s buffer
+                handleStopSession();
+            }
+        }
+    }, [sessionTime, duration, isSessionStopped, stopping]);
 
     const computeRelaxScore = (samples: Telemetry[]) => {
         if (!samples || samples.length === 0) return 50;
@@ -139,6 +191,21 @@ export default function SessionMonitor() {
         setStopping(true);
         try {
             await stopSession(sessionId, patientId, 'pi-01');
+
+            // Save Session Summary
+            const summaryData = {
+                end_ts: new Date(),
+                duration: sessionTime,
+                avgPulse: history.length > 0 ? Math.round(history.reduce((a, b) => a + (b.pulse || 0), 0) / history.length) : 0,
+                avgSpO2: history.length > 0 ? Math.round(history.reduce((a, b) => a + (b.spo2 || 0), 0) / history.length) : 0,
+                maxTemp: history.length > 0 ? Math.max(...history.map(h => h.temperature || 0)) : 0,
+                relaxationIndex: relaxScore,
+                alerts: [], // TODO: Track alerts
+                notes: ''
+            };
+            await saveSessionSummary(sessionId, patientId, summaryData);
+            await completeSession(sessionId, patientId);
+
             setIsSessionStopped(true);
         } catch (err: any) {
             alert('Error stopping session: ' + err.message);
@@ -150,6 +217,23 @@ export default function SessionMonitor() {
     const handleEmergencyStop = async () => {
         try {
             await emergencyStop('pi-01');
+
+            // Save Session Summary (Emergency)
+            if (sessionId && patientId) {
+                const summaryData = {
+                    end_ts: new Date(),
+                    duration: sessionTime,
+                    avgPulse: history.length > 0 ? Math.round(history.reduce((a, b) => a + (b.pulse || 0), 0) / history.length) : 0,
+                    avgSpO2: history.length > 0 ? Math.round(history.reduce((a, b) => a + (b.spo2 || 0), 0) / history.length) : 0,
+                    maxTemp: history.length > 0 ? Math.max(...history.map(h => h.temperature || 0)) : 0,
+                    relaxationIndex: relaxScore,
+                    alerts: ['EMERGENCY STOP TRIGGERED'],
+                    notes: 'Session stopped via Emergency Button'
+                };
+                await saveSessionSummary(sessionId, patientId, summaryData);
+                await completeSession(sessionId, patientId);
+            }
+
             alert('EMERGENCY STOP COMMAND SENT');
             setIsSessionStopped(true);
         } catch (err) {
@@ -157,16 +241,58 @@ export default function SessionMonitor() {
         }
     };
 
+    const formatTimeCooldown = (elapsedSeconds: number, totalDurationMins: number) => {
+        // Calculate remaining seconds
+        const totalSeconds = totalDurationMins * 60;
+        const remaining = Math.max(0, totalSeconds - elapsedSeconds);
+
+        const mins = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')} `;
+    };
+
     const formatTime = (seconds: number) => {
         const mins = Math.floor(seconds / 60);
         const secs = seconds % 60;
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')} `;
     };
 
     // Chart Data
     const labels = history.map(h => h.timestamp ? new Date(h.timestamp.toDate()).toLocaleTimeString() : '');
 
-    const pulseChartData = {
+    const pulseChartOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 0 },
+        interaction: { mode: 'index' as const, intersect: false },
+        plugins: {
+            legend: { display: false },
+            tooltip: {
+                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                titleColor: '#1f2937',
+                bodyColor: '#4b5563',
+                borderColor: '#e5e7eb',
+                borderWidth: 1,
+                padding: 10,
+                displayColors: true,
+            }
+        },
+        scales: {
+            x: { display: false },
+            y: {
+                type: 'linear' as const,
+                display: true,
+                position: 'left' as const,
+                grid: { color: 'rgba(0, 0, 0, 0.03)' },
+                ticks: { color: 'rgb(239, 68, 68)' },
+                title: { display: true, text: 'Pulse (BPM)', color: 'rgb(239, 68, 68)' },
+                suggestedMin: 40,
+                suggestedMax: 100
+            }
+        }
+    };
+
+    const pulseChartData: any = {
         labels,
         datasets: [
             {
@@ -182,7 +308,7 @@ export default function SessionMonitor() {
         ]
     };
 
-    const flowTempChartData = {
+    const flowChartData: any = {
         labels,
         datasets: [
             {
@@ -191,18 +317,6 @@ export default function SessionMonitor() {
                 borderColor: 'rgb(34, 197, 94)',
                 backgroundColor: 'rgba(34, 197, 94, 0.1)',
                 borderWidth: 2,
-                yAxisID: 'y',
-                tension: 0.4,
-                pointRadius: 0,
-                pointHoverRadius: 4
-            },
-            {
-                label: 'Temp (°C)',
-                data: history.map(h => h.temperature),
-                borderColor: 'rgb(245, 158, 11)',
-                backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                borderWidth: 2,
-                yAxisID: 'y1',
                 tension: 0.4,
                 pointRadius: 0,
                 pointHoverRadius: 4
@@ -210,24 +324,29 @@ export default function SessionMonitor() {
         ]
     };
 
-    const chartOptions = {
+    const tempChartData: any = {
+        labels,
+        datasets: [
+            {
+                label: 'Temp (°C)',
+                data: history.map(h => h.temperature),
+                borderColor: 'rgb(245, 158, 11)',
+                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                borderWidth: 2,
+                tension: 0.4,
+                pointRadius: 0,
+                pointHoverRadius: 4
+            }
+        ]
+    };
+
+    const flowChartOptions = {
         responsive: true,
         maintainAspectRatio: false,
         animation: { duration: 0 },
-        interaction: {
-            mode: 'index' as const,
-            intersect: false,
-        },
+        interaction: { mode: 'index' as const, intersect: false },
         plugins: {
-            legend: {
-                position: 'top' as const,
-                align: 'end' as const,
-                labels: {
-                    usePointStyle: true,
-                    boxWidth: 8,
-                    font: { size: 11 }
-                }
-            },
+            legend: { display: false },
             tooltip: {
                 backgroundColor: 'rgba(255, 255, 255, 0.95)',
                 titleColor: '#1f2937',
@@ -236,40 +355,49 @@ export default function SessionMonitor() {
                 borderWidth: 1,
                 padding: 10,
                 displayColors: true,
-                callbacks: {
-                    label: function (context: any) {
-                        return context.dataset.label + ': ' + context.parsed.y;
-                    }
-                }
             }
         },
         scales: {
-            x: {
-                display: false,
-                grid: { display: false }
-            },
+            x: { display: false },
             y: {
                 type: 'linear' as const,
                 display: true,
                 position: 'left' as const,
-                grid: {
-                    color: 'rgba(0, 0, 0, 0.03)',
-                    drawBorder: false,
-                },
-                border: { display: false },
-                ticks: { font: { size: 10 }, color: 'rgb(34, 197, 94)' },
-                title: { display: true, text: 'Flow (ml/min)', color: 'rgb(34, 197, 94)', font: { size: 10 } },
+                grid: { color: 'rgba(0, 0, 0, 0.03)' },
+                ticks: { color: 'rgb(34, 197, 94)' },
+                title: { display: true, text: 'Flow (ml/min)', color: 'rgb(34, 197, 94)' },
                 suggestedMin: 0,
                 suggestedMax: 60
-            },
-            y1: {
+            }
+        }
+    };
+
+    const tempChartOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 0 },
+        interaction: { mode: 'index' as const, intersect: false },
+        plugins: {
+            legend: { display: false },
+            tooltip: {
+                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                titleColor: '#1f2937',
+                bodyColor: '#4b5563',
+                borderColor: '#e5e7eb',
+                borderWidth: 1,
+                padding: 10,
+                displayColors: true,
+            }
+        },
+        scales: {
+            x: { display: false },
+            y: {
                 type: 'linear' as const,
                 display: true,
-                position: 'right' as const,
-                grid: { display: false },
-                border: { display: false },
-                ticks: { font: { size: 10 }, color: 'rgb(245, 158, 11)' },
-                title: { display: true, text: 'Temp (°C)', color: 'rgb(245, 158, 11)', font: { size: 10 } },
+                position: 'left' as const,
+                grid: { color: 'rgba(0, 0, 0, 0.03)' },
+                ticks: { color: 'rgb(245, 158, 11)' },
+                title: { display: true, text: 'Temp (°C)', color: 'rgb(245, 158, 11)' },
                 suggestedMin: 30,
                 suggestedMax: 45
             }
@@ -280,7 +408,7 @@ export default function SessionMonitor() {
         <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50 text-gray-900 flex flex-col font-sans">
             <Navigation />
 
-            <main className="flex-grow container mx-auto px-4 pt-24 pb-8">
+            <main className="flex-grow w-full max-w-[95%] mx-auto px-4 pt-24 pb-8">
                 {/* Header */}
                 <div className="flex justify-between items-center mb-8">
                     <div>
@@ -291,7 +419,7 @@ export default function SessionMonitor() {
                         <div className="px-3 py-1 bg-white rounded-full border border-gray-200 text-sm shadow-sm text-gray-600">
                             Device: pi-01
                         </div>
-                        <div className={`px-3 py-1 rounded-full border text-sm shadow-sm ${isSessionStopped ? 'bg-gray-100 border-gray-200 text-gray-600' : 'bg-green-50 border-green-200 text-green-700'}`}>
+                        <div className={`px - 3 py - 1 rounded - full border text - sm shadow - sm ${isSessionStopped ? 'bg-gray-100 border-gray-200 text-gray-600' : 'bg-green-50 border-green-200 text-green-700'} `}>
                             State: {isSessionStopped ? 'Stopped' : 'Running'}
                         </div>
                         <div className="text-3xl filter drop-shadow-sm transition-all duration-500 hover:scale-110" title="Status">
@@ -352,8 +480,10 @@ export default function SessionMonitor() {
                         <div className="grid grid-cols-3 gap-4">
                             <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
                                 <CardContent className="p-4 text-center">
-                                    <div className="text-gray-400 text-xs uppercase tracking-wider font-semibold">Time</div>
-                                    <div className="text-3xl font-mono text-gray-800 mt-1">{formatTime(sessionTime)}</div>
+                                    <div className="text-gray-400 text-xs uppercase tracking-wider font-semibold">Remaining Time</div>
+                                    <div className={`text - 3xl font - mono mt - 1 ${isSessionStopped ? 'text-gray-400' : 'text-gray-800'} `}>
+                                        {duration !== null ? formatTimeCooldown(sessionTime, duration) : '--:--'}
+                                    </div>
                                 </CardContent>
                             </Card>
                             <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
@@ -371,32 +501,36 @@ export default function SessionMonitor() {
                         </div>
 
                         {/* Charts */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                             <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
                                 <CardHeader className="pb-2 border-b border-gray-50">
                                     <CardTitle className="text-sm text-gray-500 uppercase tracking-wider">Pulse History</CardTitle>
                                 </CardHeader>
                                 <CardContent className="pt-4">
                                     <div className="h-[300px]">
-                                        <Line options={chartOptions} data={pulseChartData} />
+                                        <Line options={pulseChartOptions} data={pulseChartData} />
                                     </div>
                                 </CardContent>
                             </Card>
 
                             <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
                                 <CardHeader className="pb-2 border-b border-gray-50">
-                                    <CardTitle className="text-sm text-gray-500 uppercase tracking-wider">Flow & Temp</CardTitle>
+                                    <CardTitle className="text-sm text-gray-500 uppercase tracking-wider">Flow Rate</CardTitle>
                                 </CardHeader>
                                 <CardContent className="pt-4">
                                     <div className="h-[300px]">
-                                        <Line options={{
-                                            ...chartOptions,
-                                            scales: {
-                                                ...chartOptions.scales,
-                                                y: { ...chartOptions.scales.y, display: true, position: 'left' as const },
-                                                y1: { ...chartOptions.scales.y1, display: true, position: 'right' as const, grid: { drawOnChartArea: false } },
-                                            }
-                                        }} data={flowTempChartData} />
+                                        <Line options={flowChartOptions} data={flowChartData} />
+                                    </div>
+                                </CardContent>
+                            </Card>
+
+                            <Card className="bg-white/80 backdrop-blur-sm border-orange-100 shadow-sm">
+                                <CardHeader className="pb-2 border-b border-gray-50">
+                                    <CardTitle className="text-sm text-gray-500 uppercase tracking-wider">Temperature</CardTitle>
+                                </CardHeader>
+                                <CardContent className="pt-4">
+                                    <div className="h-[300px]">
+                                        <Line options={tempChartOptions} data={tempChartData} />
                                     </div>
                                 </CardContent>
                             </Card>
@@ -436,7 +570,11 @@ export default function SessionMonitor() {
                         <div className="grid grid-cols-2 gap-4 text-sm">
                             <div className="flex flex-col">
                                 <span className="text-gray-500">Duration</span>
-                                <span className="font-medium">{formatTime(sessionTime)}</span>
+                                <span className="font-medium">
+                                    {completionStatus === 'completed' && duration !== null && sessionTime >= (duration * 60 - 2)
+                                        ? formatTime(duration * 60)
+                                        : formatTime(sessionTime)}
+                                </span>
                             </div>
                             <div className="flex flex-col">
                                 <span className="text-gray-500">Avg Pulse</span>

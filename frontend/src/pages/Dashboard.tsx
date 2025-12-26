@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { onAuthState, signOutUser, getUserProfile, ensureUserProfile, getAllPatients, getPatientMeta, subscribeToDeviceStatus, startSession, toggleDevicePower, type UserData, type PatientData, type DeviceStatus } from '../lib/firebase';
+import { onAuthState, signOutUser, getUserProfile, ensureUserProfile, getAllPatients, getPatientMeta, subscribeToDeviceStatus, startSession, toggleDevicePower, registerPatientUser, type UserData, type PatientData, type DeviceStatus } from '../lib/firebase';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { type User } from 'firebase/auth';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "../components/ui/dialog";
 import { Slider } from '../components/ui/slider';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -23,9 +24,15 @@ export default function Dashboard() {
     const [loading, setLoading] = useState(true);
     const [startingSession, setStartingSession] = useState(false);
 
+    // Create Login State
+    const [createLoginOpen, setCreateLoginOpen] = useState(false);
+    const [newLoginEmail, setNewLoginEmail] = useState('');
+    const [newLoginPassword, setNewLoginPassword] = useState('');
+    const [creatingLogin, setCreatingLogin] = useState(false);
+
     // Session Configuration State
     const [therapyType, setTherapyType] = useState<string>('taila_dhara');
-    const [duration, setDuration] = useState<number>(45);
+    const [duration, setDuration] = useState<number>(5);
     const [temperature, setTemperature] = useState<number>(37);
     const [flowRate, setFlowRate] = useState<number>(50);
     const [mode, setMode] = useState<'auto' | 'manual'>('manual');
@@ -33,11 +40,11 @@ export default function Dashboard() {
     const navigate = useNavigate();
 
     const therapies = [
-        { id: 'taila_dhara', name: 'Taila Dhara (Oil)', desc: 'Warm herbal oil pouring for stress & nervous system disorders.', defaultTemp: 38, defaultFlow: 40, defaultDuration: 45 },
-        { id: 'ksheera_dhara', name: 'Ksheera Dhara (Milk)', desc: 'Medicated milk pouring for cooling & mental fatigue.', defaultTemp: 30, defaultFlow: 50, defaultDuration: 40 },
-        { id: 'takra_dhara', name: 'Takra Dhara (Buttermilk)', desc: 'Medicated buttermilk for insomnia & skin issues.', defaultTemp: 28, defaultFlow: 60, defaultDuration: 45 },
-        { id: 'jala_dhara', name: 'Jala Dhara (Water)', desc: 'Cool water pouring for pitta imbalance & heat.', defaultTemp: 25, defaultFlow: 70, defaultDuration: 30 },
-        { id: 'kwatha_dhara', name: 'Kwatha Dhara (Decoction)', desc: 'Herbal decoction for therapeutic cleansing.', defaultTemp: 35, defaultFlow: 45, defaultDuration: 35 },
+        { id: 'taila_dhara', name: 'Taila Dhara (Oil)', desc: 'Warm herbal oil pouring for stress & nervous system disorders.', defaultTemp: 38, defaultFlow: 40, defaultDuration: 5 },
+        { id: 'ksheera_dhara', name: 'Ksheera Dhara (Milk)', desc: 'Medicated milk pouring for cooling & mental fatigue.', defaultTemp: 30, defaultFlow: 50, defaultDuration: 3 },
+        { id: 'takra_dhara', name: 'Takra Dhara (Buttermilk)', desc: 'Medicated buttermilk for insomnia & skin issues.', defaultTemp: 28, defaultFlow: 60, defaultDuration: 5 },
+        { id: 'jala_dhara', name: 'Jala Dhara (Water)', desc: 'Cool water pouring for pitta imbalance & heat.', defaultTemp: 25, defaultFlow: 70, defaultDuration: 10 },
+        { id: 'kwatha_dhara', name: 'Kwatha Dhara (Decoction)', desc: 'Herbal decoction for therapeutic cleansing.', defaultTemp: 35, defaultFlow: 45, defaultDuration: 3 },
     ];
 
     const handleTherapyChange = (value: string) => {
@@ -70,6 +77,7 @@ export default function Dashboard() {
 
     useEffect(() => {
         const unsubscribe = onAuthState(async (currentUser) => {
+
             if (!currentUser) {
                 navigate('/login');
             } else {
@@ -152,6 +160,38 @@ export default function Dashboard() {
             alert('Error starting session: ' + err.message);
         } finally {
             setStartingSession(false);
+        }
+    };
+
+    const handleCreatePatientLogin = async () => {
+        if (!selectedPatientId || !newLoginEmail || !newLoginPassword) {
+            alert('Please fill all fields');
+            return;
+        }
+
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(newLoginEmail)) {
+            alert('Please enter a valid email address (e.g., patient@example.com)');
+            return;
+        }
+
+        if (newLoginPassword.length < 6) {
+            alert('Password must be at least 6 characters long');
+            return;
+        }
+
+        setCreatingLogin(true);
+        try {
+            await registerPatientUser(newLoginEmail, newLoginPassword, selectedPatientId);
+            alert(`Login created for patient ${selectedPatientId}!\nEmail: ${newLoginEmail}\nPassword: ${newLoginPassword}`);
+            setCreateLoginOpen(false);
+            setNewLoginEmail('');
+            setNewLoginPassword('');
+        } catch (err: any) {
+            console.error(err);
+            alert('Failed to create login: ' + err.message);
+        } finally {
+            setCreatingLogin(false);
         }
     };
 
@@ -267,6 +307,49 @@ export default function Dashboard() {
                                                     {selectedPatient.consent ? 'Signed' : 'Not Signed'}
                                                 </span>
                                             </div>
+
+                                            <div className="pt-4 border-t border-amber-100 mt-2">
+                                                <Dialog open={createLoginOpen} onOpenChange={setCreateLoginOpen}>
+                                                    <DialogTrigger asChild>
+                                                        <Button variant="outline" size="sm" className="w-full text-xs">
+                                                            Enable Portal Access (Create Login)
+                                                        </Button>
+                                                    </DialogTrigger>
+                                                    <DialogContent>
+                                                        <DialogHeader>
+                                                            <DialogTitle>Create Patient Login</DialogTitle>
+                                                            <DialogDescription>
+                                                                Create credentials for <strong>{selectedPatient.name}</strong> to access the Patient Portal.
+                                                            </DialogDescription>
+                                                        </DialogHeader>
+                                                        <div className="space-y-4 py-4">
+                                                            <div className="space-y-2">
+                                                                <Label>Email Address</Label>
+                                                                <Input
+                                                                    value={newLoginEmail}
+                                                                    onChange={(e) => setNewLoginEmail(e.target.value)}
+                                                                    placeholder="patient@example.com"
+                                                                />
+                                                            </div>
+                                                            <div className="space-y-2">
+                                                                <Label>Password</Label>
+                                                                <Input
+                                                                    type="password"
+                                                                    value={newLoginPassword}
+                                                                    onChange={(e) => setNewLoginPassword(e.target.value)}
+                                                                    placeholder="********"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                        <DialogFooter>
+                                                            <Button variant="outline" onClick={() => setCreateLoginOpen(false)}>Cancel</Button>
+                                                            <Button onClick={handleCreatePatientLogin} disabled={creatingLogin}>
+                                                                {creatingLogin ? 'Creating...' : 'Create Login'}
+                                                            </Button>
+                                                        </DialogFooter>
+                                                    </DialogContent>
+                                                </Dialog>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -378,19 +461,32 @@ export default function Dashboard() {
                                         </span>
                                     </div>
                                     <div className="flex items-center gap-4">
-                                        <Slider
-                                            value={[duration]}
-                                            onValueChange={(val) => setDuration(val[0])}
-                                            max={90}
-                                            step={5}
-                                            className="flex-1"
-                                        />
-                                        <Input
-                                            type="number"
-                                            value={duration}
-                                            onChange={(e) => setDuration(Number(e.target.value))}
-                                            className="w-20"
-                                        />
+                                        <div className="flex-1">
+                                            <Slider
+                                                value={[[1, 3, 5, 10].indexOf(duration) !== -1 ? [1, 3, 5, 10].indexOf(duration) : 0]}
+                                                onValueChange={(val) => {
+                                                    const options = [1, 3, 5, 10];
+                                                    setDuration(options[val[0]]);
+                                                }}
+                                                min={0}
+                                                max={3}
+                                                step={1}
+                                                className="my-4"
+                                            />
+                                            <div className="flex justify-between px-1">
+                                                {[1, 3, 5, 10].map((val) => (
+                                                    <span
+                                                        key={val}
+                                                        className={`text-xs ${duration === val ? 'text-orange-600 font-bold' : 'text-gray-400'}`}
+                                                    >
+                                                        {val}m
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        <div className="w-16 text-center font-bold text-lg text-orange-600 border rounded-md py-1 bg-white">
+                                            {duration}m
+                                        </div>
                                     </div>
                                 </div>
 
@@ -403,19 +499,23 @@ export default function Dashboard() {
                                         </span>
                                     </div>
                                     <div className={`flex items-center gap-4 ${mode === 'auto' ? 'opacity-50 pointer-events-none' : ''}`}>
-                                        <Slider
-                                            value={[flowRate]}
-                                            onValueChange={(val) => setFlowRate(val[0])}
-                                            max={100}
-                                            step={1}
-                                            className="flex-1"
-                                        />
-                                        <Input
-                                            type="number"
-                                            value={flowRate}
-                                            onChange={(e) => setFlowRate(Number(e.target.value))}
-                                            className="w-20"
-                                        />
+                                        <div className="flex-1">
+                                            <Slider
+                                                value={[flowRate]}
+                                                onValueChange={(val) => setFlowRate(val[0])}
+                                                max={100}
+                                                step={1}
+                                                className="my-4"
+                                            />
+                                            <div className="flex justify-between px-1">
+                                                <span className="text-xs text-gray-400">0%</span>
+                                                <span className="text-xs text-gray-400">50%</span>
+                                                <span className="text-xs text-gray-400">100%</span>
+                                            </div>
+                                        </div>
+                                        <div className="w-20 text-center font-bold text-lg text-orange-600 border rounded-md py-1 bg-white">
+                                            {flowRate}%
+                                        </div>
                                     </div>
                                     {mode === 'auto' && <p className="text-xs text-orange-500">Controlled automatically</p>}
                                 </div>
@@ -430,20 +530,24 @@ export default function Dashboard() {
                                     </span>
                                 </div>
                                 <div className={`flex items-center gap-4 ${mode === 'auto' ? 'opacity-50 pointer-events-none' : ''}`}>
-                                    <Slider
-                                        value={[temperature]}
-                                        onValueChange={(val) => handleTemperatureChange(val[0])}
-                                        min={20}
-                                        max={50}
-                                        step={0.5}
-                                        className="flex-1"
-                                    />
-                                    <Input
-                                        type="number"
-                                        value={temperature}
-                                        onChange={(e) => handleTemperatureChange(Number(e.target.value))}
-                                        className="w-20"
-                                    />
+                                    <div className="flex-1">
+                                        <Slider
+                                            value={[temperature]}
+                                            onValueChange={(val) => handleTemperatureChange(val[0])}
+                                            min={20}
+                                            max={50}
+                                            step={0.5}
+                                            className="my-4"
+                                        />
+                                        <div className="flex justify-between px-1">
+                                            <span className="text-xs text-gray-400">20°C</span>
+                                            <span className="text-xs text-gray-400">35°C</span>
+                                            <span className="text-xs text-gray-400">50°C</span>
+                                        </div>
+                                    </div>
+                                    <div className="w-20 text-center font-bold text-lg text-orange-600 border rounded-md py-1 bg-white">
+                                        {temperature}°C
+                                    </div>
                                 </div>
                                 {mode === 'auto' && <p className="text-xs text-orange-500">Controlled automatically</p>}
                             </div>

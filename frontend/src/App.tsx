@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import BookSession from './pages/BookSession';
 import SessionMonitor from './pages/SessionMonitor';
 import PatientHistory from './pages/PatientHistory';
+import PatientDashboard from './pages/PatientDashboard';
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/book-session" element={<BookSession />} />
           <Route path="/session/:sessionId" element={<SessionMonitor />} />
+          <Route path="/patient-dashboard" element={<PatientDashboard />} />
           <Route path="/patient/:patientId/history" element={<PatientHistory />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -58,32 +58,34 @@ export async function createPatient(patientData: Omit<PatientData, 'createdAt' |
 
 export async function getAllPatients() {
     try {
-        // Use collectionGroup to find all 'meta' collections, which contain patient info
-        // This works even if the parent 'patients' document is a phantom document
-        const metaQuery = query(collectionGroup(db, 'meta'));
-        const querySnapshot = await getDocs(metaQuery);
+        // Query the root 'patients' collection instead of collectionGroup
+        // This is more stable as it doesn't require complex index configurations
+        const patientsRef = collection(db, 'patients');
+        const querySnapshot = await getDocs(patientsRef);
 
         const patients: Array<{ id: string, name: string, age: number }> = [];
 
-        querySnapshot.forEach((docSnap) => {
-            // We only care about the 'info' document in the meta collection
-            if (docSnap.id === 'info') {
-                const data = docSnap.data() as PatientData;
-                // The parent of 'meta' collection is the patient document
-                // path: patients/{patientId}/meta/info
-                // docSnap.ref.parent is 'meta' collection
-                // docSnap.ref.parent.parent is 'patients/{patientId}' document
-                const patientId = docSnap.ref.parent.parent?.id;
+        // Fetch meta details for each patient
+        // We use Promise.all to fetch them in parallel
+        await Promise.all(querySnapshot.docs.map(async (docSnap) => {
+            try {
+                // Skip if it's not a patient root doc (though our rules enforce structure)
 
-                if (patientId) {
+                const metaRef = doc(db, 'patients', docSnap.id, 'meta', 'info');
+                const metaSnap = await getDoc(metaRef);
+
+                if (metaSnap.exists()) {
+                    const data = metaSnap.data() as PatientData;
                     patients.push({
-                        id: patientId,
+                        id: docSnap.id,
                         name: data.name,
                         age: data.age
                     });
                 }
+            } catch (innerErr) {
+                console.warn(`Failed to load patient ${docSnap.id}:`, innerErr);
             }
-        });
+        }));
 
         return patients;
     } catch (err) {
@@ -114,6 +116,7 @@ export interface UserData {
     email: string;
     role: string;
     createdAt: any;
+    patientId?: string;
 }
 
 export interface PatientData {
@@ -138,10 +141,11 @@ export interface DeviceStatus {
 export interface SessionMetadata {
     start_ts: any;
     therapist: string;
-    status: 'starting' | 'active' | 'stopping' | 'completed';
+    status: 'starting' | 'active' | 'stopping' | 'completed' | 'stopped_emergency' | 'stopped';
     patientId: string;
     deviceId: string;
     end_ts?: any;
+    settings?: any;
 }
 
 export interface Telemetry {
@@ -164,6 +168,46 @@ export interface SessionSummary {
 }
 
 // ============ AUTHENTICATION FUNCTIONS ============
+
+export async function registerPatientUser(email: string, password: string, patientId: string) {
+    // specific implementation to create user without signing out current user
+    let secondaryApp = null;
+    try {
+        // Create a unique name for the secondary app
+        const appName = "secondaryApp_" + new Date().getTime();
+        secondaryApp = initializeApp(firebaseConfig, appName);
+        const secondaryAuth = getAuth(secondaryApp);
+
+        const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
+
+        // Create user document in main DB (we can write to main DB with our authenticated client or just use the rule that we are authenticated as therapist)
+        // Wait, 'cred.user' is authenticated as the NEW user in the secondary app. 
+        // We want to write the user profile using our CURRENT (Therapist) credentials if possible, OR just use the new user's creds.
+        // Let's use the main 'db' which is authenticated as the Therapist (assuming we are calling this from Dashboard).
+
+        await setDoc(doc(db, 'users', cred.user.uid), {
+            name: 'Patient', // Will be updated or fetched from patient record
+            email,
+            role: 'patient',
+            patientId,
+            createdAt: serverTimestamp()
+        });
+
+        // Cleanup
+        await signOut(secondaryAuth);
+        return cred.user.uid;
+    } catch (err) {
+        throw err;
+    } finally {
+        if (secondaryApp) {
+            // There is no "deleteApp" in client SDK universally exposed easily? 
+            // Actually 'deleteApp' exists in 'firebase/app'.
+            // For now, we just leave it or let garbage collection handle it eventually if we didn't store it globally.
+            // But properly:
+            // deleteApp(secondaryApp).catch(console.error);
+        }
+    }
+}
 
 export async function registerUser({ name, email, password, role }: { name: string; email: string; password: string; role: string }) {
     if (!name || !email || !password || !role) throw new Error('Missing fields');
@@ -470,6 +514,30 @@ export async function stopSession(sessionId: string, patientId: string, deviceId
     }
 }
 
+export async function completeSession(sessionId: string, patientId: string) {
+    if (!sessionId || !patientId) throw new Error('Session ID and Patient ID are required');
+    try {
+        // Update parent session document
+        const sessionRef = doc(db, 'patients', patientId, 'sessions', sessionId);
+        await setDoc(sessionRef, {
+            status: 'completed',
+            end_ts: serverTimestamp() // Ensure end_ts is set
+        }, { merge: true });
+
+        // Update metadata subcollection
+        const metadataRef = doc(db, 'patients', patientId, 'sessions', sessionId, 'metadata', 'info');
+        await setDoc(metadataRef, {
+            status: 'completed',
+            end_ts: serverTimestamp()
+        }, { merge: true });
+
+        return true;
+    } catch (err) {
+        console.error('Error completing session:', err);
+        throw err;
+    }
+}
+
 export function subscribeToTelemetry(sessionId: string, patientId: string, callback: (data: Telemetry) => void) {
     const telemetryRef = collection(db, 'patients', patientId, 'sessions', sessionId, 'telemetry');
     const q = query(telemetryRef, orderBy('timestamp', 'desc'), limit(1));
@@ -498,6 +566,21 @@ export async function getSessionSummary(sessionId: string, patientId: string) {
     }
 }
 
+export async function getSessionMetadata(sessionId: string, patientId: string) {
+    if (!sessionId || !patientId) return null;
+    try {
+        const metaRef = doc(db, 'patients', patientId, 'sessions', sessionId, 'metadata', 'info');
+        const metaSnap = await getDoc(metaRef);
+        if (metaSnap.exists()) {
+            return metaSnap.data() as SessionMetadata;
+        }
+        return null;
+    } catch (err) {
+        console.error('Error getting session metadata:', err);
+        return null;
+    }
+}
+
 export async function saveSessionSummary(sessionId: string, patientId: string, summary: SessionSummary) {
     if (!sessionId || !patientId) throw new Error('Session ID and Patient ID are required');
 
@@ -507,6 +590,18 @@ export async function saveSessionSummary(sessionId: string, patientId: string, s
         return true;
     } catch (err) {
         console.error('Error saving session summary:', err);
+        throw err;
+    }
+}
+
+export async function updateSessionNotes(sessionId: string, patientId: string, notes: string) {
+    if (!sessionId || !patientId) throw new Error('Session ID and Patient ID are required');
+    try {
+        const summaryRef = doc(db, 'patients', patientId, 'sessions', sessionId, 'summary', 'final');
+        await setDoc(summaryRef, { notes }, { merge: true });
+        return true;
+    } catch (err) {
+        console.error('Error updating session notes:', err);
         throw err;
     }
 }

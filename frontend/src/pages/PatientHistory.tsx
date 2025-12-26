@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getPatientMeta, getPatientSessions, getSessionSummary, type PatientData, type SessionMetadata, type SessionSummary } from '../lib/firebase';
+import { getPatientMeta, getPatientSessions, getSessionSummary, updateSessionNotes, onAuthState, getUserProfile, type PatientData, type SessionMetadata, type SessionSummary } from '../lib/firebase';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
+import { Textarea } from '../components/ui/textarea';
 import { Navigation } from '../components/Navigation';
 import { Footer } from '../components/Footer';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 
 export default function PatientHistory() {
     const { patientId } = useParams<{ patientId: string }>();
@@ -14,6 +16,25 @@ export default function PatientHistory() {
     const [sessions, setSessions] = useState<Array<{ id: string, metadata: SessionMetadata, summary?: SessionSummary }>>([]);
     const [loading, setLoading] = useState(true);
     const [selectedSession, setSelectedSession] = useState<string | null>(null);
+    const [isTherapist, setIsTherapist] = useState(false);
+
+    // Editing Notes Logic
+    const [editingSession, setEditingSession] = useState<string | null>(null);
+    const [notesBuffer, setNotesBuffer] = useState('');
+    const [savingNotes, setSavingNotes] = useState(false);
+
+    useEffect(() => {
+        const checkRole = async () => {
+            const unsubscribe = onAuthState(async (user) => {
+                if (user) {
+                    const profile = await getUserProfile(user.uid);
+                    setIsTherapist(profile?.role === 'therapist');
+                }
+            });
+            return () => unsubscribe();
+        };
+        checkRole();
+    }, []);
 
     useEffect(() => {
         if (!patientId) {
@@ -52,6 +73,26 @@ export default function PatientHistory() {
         }
     };
 
+    const handleSaveNotes = async () => {
+        if (!editingSession || !patientId) return;
+        setSavingNotes(true);
+        try {
+            await updateSessionNotes(editingSession, patientId, notesBuffer);
+            alert('Notes updated successfully');
+            setEditingSession(null);
+            loadPatientData(); // Reload to show new notes
+        } catch (err) {
+            alert('Failed to save notes');
+        } finally {
+            setSavingNotes(false);
+        }
+    };
+
+    const openEditNotes = (sessionId: string, currentNotes: string) => {
+        setEditingSession(sessionId);
+        setNotesBuffer(currentNotes || '');
+    };
+
     const formatDate = (timestamp: any) => {
         if (!timestamp) return 'N/A';
         const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
@@ -73,29 +114,126 @@ export default function PatientHistory() {
         }
     };
 
-    const handleDownloadReport = (session: any) => {
-        const csvContent = [
-            ['Patient Name', 'Date', 'Duration', 'Avg Pulse (BPM)', 'Avg SpO2 (%)', 'Max Temp (C)', 'Notes'],
-            [
-                patient?.name || 'Unknown',
-                formatDate(session.metadata.start_ts),
-                formatDuration(session.summary?.duration || 0),
-                session.summary?.avgPulse || 'N/A',
-                session.summary?.avgSpO2 || 'N/A',
-                session.summary?.maxTemp || 'N/A',
-                `"${session.summary?.notes || ''}"`
-            ]
-        ].map(e => e.join(",")).join("\n");
+    // Import inside the component or at top (dynamic import used here to avoid SSR issues if any, though likely safe at top)
+    // But for cleaner code, we'll put imports at the top. 
+    // Since I'm replacing a function block, I'll add the logic inside.
 
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `session_report_${session.id}.csv`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+    const handleDownloadReport = async (session: any) => {
+        try {
+            const { jsPDF } = await import('jspdf');
+            const autoTable = (await import('jspdf-autotable')).default;
+
+            const doc = new jsPDF();
+
+            // Brand Colors
+            const primaryColor = [234, 88, 12]; // Orange-600
+            const secondaryColor = [75, 85, 99]; // Gray-600
+
+            // HEADER
+            // Logo / Title
+            doc.setFontSize(22);
+            doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+            doc.text("ShiroPulse", 14, 20);
+
+            doc.setFontSize(10);
+            doc.setTextColor(secondaryColor[0], secondaryColor[1], secondaryColor[2]);
+            doc.text("Ayurvedic Therapy & Monitoring System", 14, 26);
+
+            doc.setDrawColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+            doc.setLineWidth(0.5);
+            doc.line(14, 30, 196, 30);
+
+            // REPORT TITLE
+            doc.setFontSize(16);
+            doc.setTextColor(0, 0, 0);
+            doc.text("Medical Therapy Session Report", 14, 45);
+
+            // SESSION META
+            doc.setFontSize(10);
+            doc.setTextColor(secondaryColor[0], secondaryColor[1], secondaryColor[2]);
+            const dateStr = formatDate(session.metadata.start_ts);
+            doc.text(`Session ID: ${session.id}`, 196, 20, { align: 'right' });
+            doc.text(`Date: ${dateStr}`, 14, 52);
+            doc.text(`Duration: ${formatDuration(session.summary?.duration || 0)}`, 14, 57);
+            doc.text(`Therapist ID: ${session.metadata.therapist || 'N/A'}`, 14, 62);
+
+            // PATIENT DETAILS SECTION
+            doc.setFontSize(12);
+            doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+            doc.text("Patient Information", 14, 75);
+
+            const patientInfo = [
+                ['Name', patient?.name || 'N/A', 'Age', `${patient?.age || 'N/A'}`],
+                ['Gender', patient?.gender || 'N/A', 'ID Number', patient?.idNumber || 'N/A'],
+                ['Conditions', patient?.medicalConditions || 'None', 'Consent', patient?.consent ? 'Signed' : 'Pending']
+            ];
+
+            autoTable(doc, {
+                startY: 80,
+                head: [],
+                body: patientInfo,
+                theme: 'plain',
+                styles: { fontSize: 10, cellPadding: 2 },
+                columnStyles: {
+                    0: { fontStyle: 'bold', cellWidth: 30 },
+                    1: { cellWidth: 60 },
+                    2: { fontStyle: 'bold', cellWidth: 30 },
+                    3: { cellWidth: 60 }
+                }
+            });
+
+            // VITALS SUMMARY
+            let finalY = (doc as any).lastAutoTable.finalY + 15;
+            doc.setFontSize(12);
+            doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+            doc.text("Session Vitals Summary", 14, finalY);
+
+            const vitalsData = [
+                ['Average Pulse', `${session.summary?.avgPulse || '--'} BPM`],
+                ['Average SpO2', `${session.summary?.avgSpO2 || '--'} %`],
+                ['Max Temperature', `${session.summary?.maxTemp || '--'} °C`],
+                ['Relaxation Index', `${session.summary?.relaxationIndex?.toFixed(1) || '--'} / 100`]
+            ];
+
+            autoTable(doc, {
+                startY: finalY + 5,
+                head: [['Metric', 'Value']],
+                body: vitalsData,
+                theme: 'striped',
+                headStyles: { fillColor: primaryColor },
+                styles: { fontSize: 10, cellPadding: 3 }
+            });
+
+            // CLINICAL NOTES
+            finalY = (doc as any).lastAutoTable.finalY + 15;
+            doc.setFontSize(12);
+            doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+            doc.text("Clinical Notes & Observations", 14, finalY);
+
+            const notes = session.summary?.notes || "No clinical notes recorded for this session.";
+
+            doc.setFontSize(10);
+            doc.setTextColor(0, 0, 0);
+            const splitNotes = doc.splitTextToSize(notes, 180);
+            doc.text(splitNotes, 14, finalY + 7);
+
+            // FOOTER
+            const pageCount = (doc as any).internal.getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                doc.setFontSize(8);
+                doc.setTextColor(150, 150, 150);
+                doc.text(`Generated on ${new Date().toLocaleString()}`, 14, 285);
+                doc.text(`Page ${i} of ${pageCount}`, 196, 285, { align: 'right' });
+            }
+
+            // Save
+            doc.save(`ShiroPulse_Report_${patient?.name?.replace(/\s+/g, '_')}_${session.id}.pdf`);
+
+        } catch (err) {
+            console.error("PDF generation failed:", err);
+            alert("Failed to generate PDF report. Please contact support.");
+        }
     };
 
     if (loading) {
@@ -116,7 +254,7 @@ export default function PatientHistory() {
                         <h1 className="text-3xl font-bold text-gray-900">Patient History</h1>
                         <p className="text-gray-600 mt-1">{patient?.name || 'Loading...'}</p>
                     </div>
-                    <Button onClick={() => navigate(`/dashboard?patientId=${patientId}`)} variant="outline">
+                    <Button onClick={() => navigate(isTherapist ? `/dashboard?patientId=${patientId}` : '/patient-dashboard')} variant="outline">
                         ← Back to Dashboard
                     </Button>
                 </div>
@@ -274,7 +412,7 @@ export default function PatientHistory() {
                                         </div>
 
                                         {/* Expanded Details */}
-                                        {selectedSession === session.id && session.summary && (
+                                        {selectedSession === session.id && (
                                             <div className="mt-4 pt-4 border-t border-gray-200">
                                                 <h4 className="font-semibold mb-2">Session Details</h4>
                                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
@@ -282,11 +420,7 @@ export default function PatientHistory() {
                                                         <p className="text-gray-600">Therapist ID</p>
                                                         <p className="font-mono text-xs">{session.metadata.therapist}</p>
                                                     </div>
-                                                    <div>
-                                                        <p className="text-gray-600">Device ID</p>
-                                                        <p className="font-mono text-xs">{session.metadata.deviceId}</p>
-                                                    </div>
-                                                    {session.summary.alerts && session.summary.alerts.length > 0 && (
+                                                    {session.summary?.alerts && session.summary.alerts.length > 0 && (
                                                         <div className="md:col-span-2">
                                                             <p className="text-gray-600 mb-1">Alerts</p>
                                                             <ul className="list-disc list-inside space-y-1">
@@ -296,12 +430,30 @@ export default function PatientHistory() {
                                                             </ul>
                                                         </div>
                                                     )}
-                                                    {session.summary.notes && (
-                                                        <div className="md:col-span-2">
-                                                            <p className="text-gray-600 mb-1">Notes</p>
-                                                            <p className="text-gray-800">{session.summary.notes}</p>
+
+                                                    {/* Notes Section */}
+                                                    <div className="md:col-span-2 bg-gray-50 p-3 rounded border border-gray-200">
+                                                        <div className="flex justify-between items-center mb-1">
+                                                            <p className="text-gray-600 font-medium">Clinical Notes</p>
+                                                            {isTherapist && (
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="sm"
+                                                                    className="h-6 text-xs text-blue-600"
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        openEditNotes(session.id, session.summary?.notes || '');
+                                                                    }}
+                                                                >
+                                                                    Edit Notes
+                                                                </Button>
+                                                            )}
                                                         </div>
-                                                    )}
+                                                        <p className="text-gray-800 whitespace-pre-wrap">
+                                                            {session.summary?.notes || 'No notes added.'}
+                                                        </p>
+                                                    </div>
+
                                                     <div className="md:col-span-2 mt-2">
                                                         <Button
                                                             onClick={(e) => {
@@ -325,8 +477,29 @@ export default function PatientHistory() {
                     </CardContent>
                 </Card>
             </main>
-
             <Footer />
+
+            <Dialog open={!!editingSession} onOpenChange={() => setEditingSession(null)}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>Edit Session Notes</DialogTitle>
+                    </DialogHeader>
+                    <div className="py-2">
+                        <Textarea
+                            value={notesBuffer}
+                            onChange={(e) => setNotesBuffer(e.target.value)}
+                            rows={6}
+                            placeholder="Enter clinical observations, patient feedback, or treatment adjustments..."
+                        />
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setEditingSession(null)}>Cancel</Button>
+                        <Button onClick={handleSaveNotes} disabled={savingNotes}>
+                            {savingNotes ? 'Saving...' : 'Save Notes'}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

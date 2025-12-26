@@ -40,6 +40,8 @@ export default function Register() {
                 errorMessage = 'Please enter a valid email address.';
             } else if (err.code === 'auth/weak-password') {
                 errorMessage = 'Password is too weak. Please use at least 6 characters.';
+            } else if (err.code === 'permission-denied') {
+                errorMessage = 'Missing or insufficient permissions. Please ensure your Firestore Security Rules allow creating user profiles.';
             } else if (err.message) {
                 errorMessage = err.message.replace('Firebase: ', '').replace(/\(auth\/[^)]+\)\.?/, '').trim();
             }

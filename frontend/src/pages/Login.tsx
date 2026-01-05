@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { login, resetPassword, getUserProfile } from '../lib/firebase';
+import { login, resetPassword, getUserProfile, signOutUser } from '../lib/firebase';
 import { useNavigate, Link } from 'react-router-dom';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -23,10 +23,13 @@ export default function Login() {
             const cred = await login({ email, password });
             const profile = await getUserProfile(cred.user.uid);
 
-            if (profile?.role === 'patient') {
-                navigate('/patient-dashboard');
-            } else {
+            if (profile?.role === 'therapist') {
                 navigate('/dashboard');
+            } else {
+                // Determine user role for the error message
+                const role = profile?.role ? profile.role.charAt(0).toUpperCase() + profile.role.slice(1) : 'Unknown';
+                await signOutUser();
+                setError(`Access denied. This login is for Therapists only. You are a ${role}. Please use the Patient Login.`);
             }
         } catch (err: any) {
             // Convert Firebase errors to user-friendly messages
@@ -77,9 +80,9 @@ export default function Login() {
         <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50 p-4">
             <Card className="w-full max-w-md shadow-xl bg-white/80 backdrop-blur-sm">
                 <CardHeader className="space-y-1">
-                    <CardTitle className="text-2xl font-bold text-center">Welcome back</CardTitle>
+                    <CardTitle className="text-2xl font-bold text-center text-orange-700">Therapist Login</CardTitle>
                     <CardDescription className="text-center">
-                        Enter your email to sign in to your account
+                        Enter your credentials to access the practice dashboard
                     </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -89,7 +92,7 @@ export default function Login() {
                             <Input
                                 id="email"
                                 type="email"
-                                placeholder="m@example.com"
+                                placeholder="therapist@example.com"
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
                                 required
@@ -129,11 +132,18 @@ export default function Login() {
                         </Button>
                     </form>
                 </CardContent>
-                <CardFooter className="flex justify-center">
-                    <p className="text-sm text-muted-foreground">
+                <CardFooter className="flex flex-col gap-4">
+                    <div className="w-full pt-2 border-t border-gray-100">
+                        <Link to="/patient-login">
+                            <Button variant="outline" className="w-full border-teal-200 text-teal-700 hover:bg-teal-50 hover:text-teal-800">
+                                Patient? Login here
+                            </Button>
+                        </Link>
+                    </div>
+                    <p className="text-sm text-center text-muted-foreground">
                         Don't have an account?{' '}
                         <Link to="/register" className="text-orange-600 hover:underline font-medium">
-                            Sign up
+                            Therapist Sign up
                         </Link>
                     </p>
                 </CardFooter>

@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import ProtectedRoute from './components/ProtectedRoute';
 import Home from './pages/Home';
 import Login from './pages/Login';
+import PatientLogin from './pages/PatientLogin';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import BookSession from './pages/BookSession';
@@ -15,6 +16,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/patient-login" element={<PatientLogin />} />
         <Route path="/register" element={<Register />} />
 
         {/* Protected Routes */}

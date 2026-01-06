@@ -165,6 +165,12 @@ export interface SessionSummary {
     relaxationIndex?: number;
     alerts?: string[];
     notes?: string;
+    relaxationState?: {
+        state: string;
+        confidence: number;
+        reason: string;
+        metrics?: any;
+    };
 }
 
 // ============ AUTHENTICATION FUNCTIONS ============

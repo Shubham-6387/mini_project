@@ -204,8 +204,38 @@ export default function PatientHistory() {
                 styles: { fontSize: 10, cellPadding: 3 }
             });
 
+            // RELAXATION ANALYSIS (NEW SECTION)
+            if (session.summary?.relaxationState) {
+                finalY = (doc as any).lastAutoTable.finalY + 15;
+                doc.setFontSize(12);
+                doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+                doc.text("Ayurvedic Relaxation Analysis", 14, finalY);
+
+                const rs = session.summary.relaxationState;
+                const stateColor = rs.state.includes('Deeply') ? [22, 163, 74] : rs.state.includes('Moderately') ? [202, 138, 4] : [220, 38, 38];
+
+                doc.setFontSize(14);
+                doc.setTextColor(stateColor[0], stateColor[1], stateColor[2]);
+                doc.text(rs.state, 14, finalY + 8);
+
+                doc.setFontSize(10);
+                doc.setTextColor(secondaryColor[0], secondaryColor[1], secondaryColor[2]);
+                doc.text(`"${rs.reason}"`, 14, finalY + 14);
+
+                // Tech details
+                if (rs.metrics) {
+                    doc.setFontSize(9);
+                    doc.setTextColor(100, 100, 100);
+                    const details = `Pulse Drop: ${rs.metrics.pulseDrop?.toFixed(1) || 0} bpm | Pulse Stability: ${rs.metrics.pulseStability?.toFixed(2) || 0} | Confidence: ${(rs.confidence * 100).toFixed(0)}%`;
+                    doc.text(details, 14, finalY + 20);
+                }
+            } else {
+                // If old session without this data
+                finalY = (doc as any).lastAutoTable.finalY;
+            }
+
             // CLINICAL NOTES
-            finalY = (doc as any).lastAutoTable.finalY + 15;
+            finalY = finalY + 30; // Add some buffer
             doc.setFontSize(12);
             doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
             doc.text("Clinical Notes & Observations", 14, finalY);
@@ -378,6 +408,24 @@ export default function PatientHistory() {
                                                     <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(session.metadata.status)}`}>
                                                         {session.metadata.status}
                                                     </span>
+                                                    {/* Relaxation Badge */}
+                                                    {session.summary?.relaxationState && (
+                                                        <div className="group relative flex items-center">
+                                                            <span className={`ml-2 px-2 py-1 rounded-full text-xs font-bold border ${session.summary.relaxationState.state === 'Deeply Relaxed' ? 'bg-green-100 text-green-700 border-green-200' :
+                                                                    session.summary.relaxationState.state === 'Moderately Relaxed' ? 'bg-yellow-100 text-yellow-700 border-yellow-200' :
+                                                                        'bg-red-50 text-red-600 border-red-100'
+                                                                }`}>
+                                                                {session.summary.relaxationState.state === 'Deeply Relaxed' ? '🟢' :
+                                                                    session.summary.relaxationState.state === 'Moderately Relaxed' ? '🟡' : '🔴'}
+                                                                {' '} {session.summary.relaxationState.state}
+                                                            </span>
+                                                            {/* Tooltip */}
+                                                            <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-gray-900 text-white text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none">
+                                                                {session.summary.relaxationState.reason}
+                                                                <div className="absolute top-full left-1/2 transform -translate-x-1/2 -mt-1 border-4 border-transparent border-t-gray-900"></div>
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                 </div>
                                                 <p className="text-sm text-gray-600">
                                                     Started: {formatDate(session.metadata.start_ts)}

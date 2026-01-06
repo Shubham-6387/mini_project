@@ -13,8 +13,10 @@ import {
     completeSession,
     type PatientData,
     type Telemetry,
-    type DeviceStatus
+    type DeviceStatus,
+    type SessionSummary
 } from '../lib/firebase';
+import { analyzeRelaxation, type RelaxationResult } from '../lib/relaxationUtils';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Navigation } from '../components/Navigation';
@@ -59,6 +61,7 @@ export default function SessionMonitor() {
     const [showCompletionModal, setShowCompletionModal] = useState(false);
     const [completionStatus, setCompletionStatus] = useState('');
     const [deviceStatus, setDeviceStatus] = useState<DeviceStatus>({ last_seen: null, online: false });
+    const [finalRelaxationState, setFinalRelaxationState] = useState<RelaxationResult | null>(null);
 
     const [relaxScore, setRelaxScore] = useState(50);
 
@@ -192,16 +195,21 @@ export default function SessionMonitor() {
         try {
             await stopSession(sessionId, patientId, 'pi-01');
 
+            // Perform relaxation analysis
+            const relaxationResult = analyzeRelaxation(history, relaxScore);
+            setFinalRelaxationState(relaxationResult);
+
             // Save Session Summary
-            const summaryData = {
+            const summaryData: SessionSummary = {
                 end_ts: new Date(),
                 duration: sessionTime,
                 avgPulse: history.length > 0 ? Math.round(history.reduce((a, b) => a + (b.pulse || 0), 0) / history.length) : 0,
                 avgSpO2: history.length > 0 ? Math.round(history.reduce((a, b) => a + (b.spo2 || 0), 0) / history.length) : 0,
                 maxTemp: history.length > 0 ? Math.max(...history.map(h => h.temperature || 0)) : 0,
                 relaxationIndex: relaxScore,
-                alerts: [], // TODO: Track alerts
-                notes: ''
+                alerts: [],
+                notes: '',
+                relaxationState: relaxationResult
             };
             await saveSessionSummary(sessionId, patientId, summaryData);
             await completeSession(sessionId, patientId);
@@ -583,6 +591,23 @@ export default function SessionMonitor() {
                                 </span>
                             </div>
                         </div>
+
+                        {finalRelaxationState && (
+                            <div className="mt-4 p-4 bg-gray-50 rounded-lg border border-gray-100">
+                                <p className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-2">Relaxation Assessment</p>
+                                <div className="flex items-center gap-2 mb-1">
+                                    <span className={`text-lg ${finalRelaxationState.state === 'Deeply Relaxed' ? 'text-green-600' :
+                                        finalRelaxationState.state === 'Moderately Relaxed' ? 'text-yellow-600' :
+                                            'text-red-500'
+                                        }`}>
+                                        {finalRelaxationState.state === 'Deeply Relaxed' ? '🟢' :
+                                            finalRelaxationState.state === 'Moderately Relaxed' ? '🟡' : '🔴'}
+                                    </span>
+                                    <span className="font-bold text-gray-800">{finalRelaxationState.state}</span>
+                                </div>
+                                <p className="text-sm text-gray-600 italic">"{finalRelaxationState.reason}"</p>
+                            </div>
+                        )}
                     </div>
                     <DialogFooter className="sm:justify-center">
                         <Button type="button" variant="default" onClick={() => navigate('/dashboard')} className="w-full">

@@ -1,0 +1,10 @@
+services:
+  # Frontend - Static Site
+  - type: web
+    name: shiropulse-frontend
+    rootDir: frontend
+    env: static
+    # Build command runs inside the rootDir
+    buildCommand: npm install && npm run build
+    # Directory to publish, relative to rootDir
+    staticPublishPath: ./build

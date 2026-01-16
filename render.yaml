@@ -8,3 +8,6 @@ services:
     buildCommand: npm install && npm run build
     # Directory to publish, relative to rootDir
     staticPublishPath: ./build
+    envVars:
+      - key: NODE_VERSION
+        value: 20.10.0
